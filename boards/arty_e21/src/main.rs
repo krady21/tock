@@ -4,7 +4,7 @@
 // Disable this attribute when documenting, as a workaround for
 // https://github.com/rust-lang/rust/issues/62184.
 #![cfg_attr(not(doc), no_main)]
-#![feature(const_fn)]
+#![feature(const_fn, const_in_array_repeat_expressions)]
 
 use capsules::virtual_alarm::{MuxAlarm, VirtualMuxAlarm};
 use kernel::capabilities;
@@ -12,7 +12,7 @@ use kernel::common::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferred
 use kernel::component::Component;
 use kernel::hil;
 use kernel::Platform;
-use kernel::{create_capability, debug, static_init};
+use kernel::{create_capability, debug, static_init, Scheduler};
 
 mod timer_test;
 
@@ -247,5 +247,8 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    board_kernel.kernel_loop(&artye21, chip, None, &main_loop_cap);
+    let scheduler = components::cooperative::CooperativeComponent::new(board_kernel, &PROCESSES)
+        .finalize(components::coop_component_helper!(NUM_PROCS));
+
+    scheduler.kernel_loop(&artye21, chip, None, &main_loop_cap);
 }

@@ -7,6 +7,7 @@
 // Disable this attribute when documenting, as a workaround for
 // https://github.com/rust-lang/rust/issues/62184.
 #![cfg_attr(not(doc), no_main)]
+#![feature(const_in_array_repeat_expressions)]
 #![deny(missing_docs)]
 
 mod imix_components;
@@ -25,7 +26,7 @@ use kernel::hil::radio;
 use kernel::hil::radio::{RadioConfig, RadioData};
 use kernel::hil::Controller;
 #[allow(unused_imports)]
-use kernel::{create_capability, debug, debug_gpio, static_init};
+use kernel::{create_capability, debug, debug_gpio, static_init, Scheduler};
 
 use components;
 use components::alarm::{AlarmDriverComponent, AlarmMuxComponent};
@@ -563,5 +564,17 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    board_kernel.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
+    let scheduler =
+        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
+            .finalize(components::rr_component_helper!(NUM_PROCS));
+    /*let scheduler =
+    components::sched::priority::PriorityComponent::new(board_kernel, &PROCESSES).finalize(());*/
+    /*let scheduler =
+    components::sched::cooperative::CooperativeComponent::new(board_kernel, &PROCESSES)
+        .finalize(components::coop_component_helper!(NUM_PROCS));*/
+    /*let scheduler =
+    components::sched::mlfq::MLFQComponent::new(board_kernel, mux_alarm, &PROCESSES).finalize(
+        components::mlfq_component_helper!(sam4l::ast::Ast, NUM_PROCS),
+    );*/
+    scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
 }
