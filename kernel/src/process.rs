@@ -134,15 +134,14 @@ pub fn load_processes<C: Chip>(
     _capability: &dyn ProcessManagementCapability,
 ) -> Result<(), ProcessLoadError> {
     let mut remaining_flash = app_flash;
-    let mut app_memory_ptr = app_memory.as_mut_ptr();
-    let mut app_memory_size = app_memory.len();
+    let mut remaining_memory = app_memory;
 
     if config::CONFIG.debug_load_processes {
         debug!(
             "Loading processes from flash={:#010X} into sram=[{:#010X}:{:#010X}]",
             app_flash.as_ptr() as usize,
-            app_memory_ptr as usize,
-            app_memory_ptr as usize + app_memory_size
+            app_memory.as_ptr() as usize,
+            app_memory.as_ptr() as usize + app_memory.len()
         );
     }
 
@@ -186,15 +185,16 @@ pub fn load_processes<C: Chip>(
                 .get(0..app_length as usize)
                 .ok_or(ProcessLoadError::NotEnoughFlash)?;
 
-            // Try to create a process object from that app slice.
-            let (process, memory_offset) = Process::create(
+            // Try to create a process object from that app slice. This returns
+            // an optional Process object and a slice for the memory allocated
+            // to this process.
+            let (process, app_memory) = Process::create(
                 kernel,
                 chip,
                 app_flash,
                 header_length as usize,
                 version,
-                app_memory_ptr,
-                app_memory_size,
+                remaining_memory,
                 fault_response,
                 i,
             )?;
@@ -209,8 +209,8 @@ pub fn load_processes<C: Chip>(
                         i,
                         app_flash.as_ptr() as usize,
                         app_flash.as_ptr() as usize + app_flash.len(),
-                        app_memory_ptr as usize,
-                        app_memory_ptr as usize + memory_offset,
+                        app_memory.as_ptr() as usize,
+                        app_memory.as_ptr() as usize + app_memory.len(),
                         process.map(|p| p.get_process_name())
                     );
                 }
@@ -218,12 +218,24 @@ pub fn load_processes<C: Chip>(
             }
 
             // Advance in our buffers before seeing if there is an additional
-            // process to load.
+            // process to load. Flash is straightforward since we require that
+            // applications are back-to-back in flash. For RAM, we want to move
+            // the remaining RAM slice to after the slice used by this process.
             remaining_flash = remaining_flash
                 .get(app_flash.len()..)
                 .ok_or(ProcessLoadError::NotEnoughFlash)?;
-            app_memory_ptr = app_memory_ptr.add(memory_offset);
-            app_memory_size -= memory_offset;
+
+            // Calculate the new offset. Since the `app_memory` slice does not
+            // need to start at the same address as the `remaining_memory`
+            // starting buffer, we have to calculate that offset too. If we
+            // cannot create a new slice with the updated remaining memory
+            // region, then `create()` must have allocated too much memory
+            // somehow to a process, and this is a bug in the kernel. This
+            // should not happen.
+            let new_remaining_memory_starting_offset = (app_memory.as_ptr() as usize - remaining_memory.as_ptr() as usize) + app_memory.len();
+            remaining_memory = remaining_memory
+                .get(new_remaining_memory_starting_offset..)
+                .ok_or(ProcessLoadError::InternalError)?;
         }
     }
 
@@ -1501,11 +1513,10 @@ impl<C: 'static + Chip> Process<'_, C> {
         app_flash: &'static [u8],
         header_length: usize,
         app_version: u16,
-        remaining_app_memory: *mut u8,
-        remaining_app_memory_size: usize,
+        remaining_memory: &'static mut [u8],
         fault_response: FaultResponse,
         index: usize,
-    ) -> Result<(Option<&'static dyn ProcessType>, usize), ProcessLoadError> {
+    ) -> Result<(Option<&'static dyn ProcessType>, &'static [u8]), ProcessLoadError> {
         // Get a slice for just the app header.
         let header_flash = app_flash
             .get(0..header_length as usize)
@@ -1554,7 +1565,10 @@ impl<C: 'static + Chip> Process<'_, C> {
                     );
                 }
             }
-            return Ok((None, 0));
+            // Return a zero length slice signifying we did not use any memory
+            // for this process/padding. Getting a zero-length slice cannot
+            // fail, so this `InternalError` will not happen.
+            return Ok((None, remaining_memory.get(0..0).ok_or(ProcessLoadError::InternalError)?));
         }
 
         // Otherwise, actually load the app.
@@ -1620,9 +1634,9 @@ impl<C: 'static + Chip> Process<'_, C> {
         let min_total_memory_size = min_app_ram_size + initial_kernel_memory_size;
 
         // Determine where process memory will go and allocate MPU region for app-owned memory.
-        let (memory_start, memory_size) = match chip.mpu().allocate_app_memory_region(
-            remaining_app_memory as *const u8,
-            remaining_app_memory_size,
+        let (app_memory_start, app_memory_size) = match chip.mpu().allocate_app_memory_region(
+            remaining_memory.as_ptr() as *const u8,
+            remaining_memory.len(),
             min_total_memory_size,
             initial_app_memory_size,
             initial_kernel_memory_size,
@@ -1645,11 +1659,12 @@ impl<C: 'static + Chip> Process<'_, C> {
             }
         };
 
-        // Compute how much padding before start of process memory.
-        let memory_padding_size = (memory_start as usize) - (remaining_app_memory as usize);
-
-        // Set up process memory.
-        let app_memory = slice::from_raw_parts_mut(memory_start as *mut u8, memory_size);
+        // Get a slice for the memory dedicated to the process. This can fail if
+        // the MPU returns a region of memory that is not inside of the
+        // `remaining_memory` slice passed to `create()` to allocate the
+        // process's memory out of.
+        let memory_start_offset = app_memory_start as usize - remaining_memory.as_ptr() as usize;
+        let app_memory = remaining_memory.get(memory_start_offset..memory_start_offset+app_memory_size).ok_or(ProcessLoadError::InternalError)?;
 
         // Check if the memory region is valid for the process. If a process
         // included a fixed address for the start of RAM in its TBF header (this
@@ -1668,8 +1683,8 @@ impl<C: 'static + Chip> Process<'_, C> {
         }
 
         // Set the initial process stack and memory to 3072 bytes.
-        let initial_stack_pointer = memory_start.add(initial_app_memory_size);
-        let initial_sbrk_pointer = memory_start.add(initial_app_memory_size);
+        let initial_stack_pointer = app_memory.as_ptr().add(initial_app_memory_size);
+        let initial_sbrk_pointer = app_memory.as_ptr().add(initial_app_memory_size);
 
         // Set up initial grant region.
         let mut kernel_memory_break = app_memory.as_mut_ptr().add(app_memory.len());
