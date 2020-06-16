@@ -20,12 +20,9 @@ use crate::common::list::{List, ListLink, ListNode};
 use crate::hil::time;
 use crate::hil::time::Frequency;
 use crate::ipc;
-use crate::platform::mpu::MPU;
 use crate::platform::systick::SysTick;
 use crate::platform::{Chip, Platform};
-use crate::process;
-use crate::sched::{Kernel, Scheduler};
-use crate::syscall::{ContextSwitchReason, Syscall};
+use crate::sched::{Kernel, Scheduler, StoppedExecutingReason};
 use core::cell::Cell;
 
 #[derive(Default)]
@@ -44,7 +41,7 @@ pub struct MLFQProcessNode<'a> {
 impl<'a> MLFQProcessNode<'a> {
     pub fn new(appid: AppId) -> MLFQProcessNode<'a> {
         MLFQProcessNode {
-            appid: appid,
+            appid,
             state: MfProcState::default(),
             next: ListLink::empty(),
         }
@@ -64,15 +61,13 @@ pub struct MLFQSched<'a, A: 'static + time::Alarm<'static>> {
 }
 
 impl<'a, A: 'static + time::Alarm<'static>> MLFQSched<'a, A> {
-    /// Skip re-scheduling a process if its quanta is nearly exhausted
-    const MIN_QUANTA_THRESHOLD_US: u32 = 500;
     /// How often to restore all processes to max priority
     pub const PRIORITY_REFRESH_PERIOD_MS: u32 = 5000;
     pub const NUM_QUEUES: usize = 3;
     pub fn new(kernel: &'static Kernel, alarm: &'static A) -> Self {
         Self {
-            kernel: kernel,
-            alarm: alarm,
+            kernel,
+            alarm,
             processes: [List::new(), List::new(), List::new()],
         }
     }
@@ -98,107 +93,6 @@ impl<'a, A: 'static + time::Alarm<'static>> MLFQSched<'a, A> {
                 None => continue,
             }
         }
-    }
-
-    // Note: This do_process differs from the original version in Tock in that it services
-    // processes until a yield w/o callbacks or a Timeslice expiration -- it does not break to handle the
-    // bottom half of interrupts immediately
-    unsafe fn do_process<P: Platform, C: Chip>(
-        &self,
-        platform: &P,
-        chip: &C,
-        process: &dyn process::ProcessType,
-        ipc: Option<&crate::ipc::IPC>,
-        timeslice: u32,
-        node_ref: &MLFQProcessNode,
-    ) -> Option<ContextSwitchReason> {
-        let systick = chip.systick();
-        systick.reset();
-        systick.set_timer(timeslice);
-        systick.enable(false);
-        let mut switch_reason_opt = None;
-
-        loop {
-            if systick.overflowed()
-                || !systick.greater_than(Self::MIN_QUANTA_THRESHOLD_US)
-                || node_ref.state.us_used_this_queue.get() > Self::PRIORITY_REFRESH_PERIOD_MS * 1000
-            {
-                switch_reason_opt = Some(ContextSwitchReason::TimesliceExpired);
-                process.debug_timeslice_expired();
-                break;
-            }
-
-            match process.get_state() {
-                process::State::Running => {
-                    // Running means that this process expects to be running,
-                    // so go ahead and set things up and switch to executing
-                    // the process.
-                    process.setup_mpu();
-                    chip.mpu().enable_mpu();
-                    systick.enable(true); //Enables systick interrupts
-                    let context_switch_reason = process.switch_to();
-                    let remaining = systick.get_value();
-                    systick.enable(false); //disables systick interrupts
-                    chip.mpu().disable_mpu();
-                    node_ref
-                        .state
-                        .us_used_this_queue
-                        .set(node_ref.state.us_used_this_queue.get() + (timeslice - remaining));
-                    switch_reason_opt = context_switch_reason;
-
-                    // Now the process has returned back to the kernel. Check
-                    // why and handle the process as appropriate.
-                    self.kernel
-                        .process_return(context_switch_reason, process, platform);
-                    match context_switch_reason {
-                        Some(ContextSwitchReason::SyscallFired {
-                            syscall: Syscall::YIELD,
-                        }) => {
-                            // There might be already enqueued callbacks
-                            continue;
-                        }
-                        Some(ContextSwitchReason::TimesliceExpired) => {
-                            // break to handle other processes
-                            break;
-                        }
-                        Some(ContextSwitchReason::Interrupted) => {
-                            // this scheduler defers bottom half handling until yield w/ no
-                            // callbacks or timeslice expiration
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-                process::State::Yielded | process::State::Unstarted => match process.dequeue_task()
-                {
-                    // If the process is yielded it might be waiting for a
-                    // callback. If there is a task scheduled for this process
-                    // go ahead and set the process to execute it.
-                    None => {
-                        break;
-                    }
-                    Some(cb) => self.kernel.handle_callback(cb, process, ipc),
-                },
-                process::State::Fault => {
-                    // We should never be scheduling a process in fault.
-                    panic!("Attempted to schedule a faulty process");
-                }
-                process::State::StoppedRunning => {
-                    break;
-                    // Do nothing
-                }
-                process::State::StoppedYielded => {
-                    break;
-                    // Do nothing
-                }
-                process::State::StoppedFaulted => {
-                    break;
-                    // Do nothing
-                }
-            }
-        }
-        systick.reset();
-        switch_reason_opt
     }
 
     /// Returns the process at the head of the highest priority queue containing a process
@@ -242,6 +136,7 @@ impl<'a, A: 'static + time::Alarm<'static>> Scheduler for MLFQSched<'a, A> {
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
     ) {
+        assert!(!chip.systick().dummy());
         let delta = (Self::PRIORITY_REFRESH_PERIOD_MS * A::Frequency::frequency()) / 1000;
         let mut next_reset = self.alarm.now().wrapping_add(delta);
         loop {
@@ -268,20 +163,23 @@ impl<'a, A: 'static + time::Alarm<'static>> Scheduler for MLFQSched<'a, A> {
                     let node_ref = node_ref_opt.unwrap(); //Panic if fail bc processes_blocked()!
                     let mut punish = false;
                     self.kernel.process_map_or((), node_ref.appid, |process| {
-                        let switch_reason = self.do_process(
+                        let timeslice = self.get_timeslice_us(queue_idx)
+                            - node_ref.state.us_used_this_queue.get();
+                        let (return_reason, time_used) = self.kernel.do_process(
                             platform,
                             chip,
+                            chip.systick(),
                             process,
                             ipc,
                             self.get_timeslice_us(queue_idx),
-                            node_ref,
+                            false,
                         );
+                        node_ref.state.us_used_this_queue.set(timeslice - time_used);
 
-                        punish = switch_reason == Some(ContextSwitchReason::TimesliceExpired);
+                        punish = return_reason == StoppedExecutingReason::TimesliceExpired;
                     });
                     if punish {
                         node_ref.state.us_used_this_queue.set(0);
-                        //TODO: Bring back associated const instead of 3
                         let next_queue = if queue_idx == Self::NUM_QUEUES - 1 {
                             queue_idx
                         } else {

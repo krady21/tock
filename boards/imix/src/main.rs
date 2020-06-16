@@ -564,17 +564,15 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    let scheduler =
-        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
-            .finalize(components::rr_component_helper!(NUM_PROCS));
     /*let scheduler =
-    components::sched::priority::PriorityComponent::new(board_kernel, &PROCESSES).finalize(());*/
+    components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
+        .finalize(components::rr_component_helper!(NUM_PROCS));*/
     /*let scheduler =
     components::sched::cooperative::CooperativeComponent::new(board_kernel, &PROCESSES)
         .finalize(components::coop_component_helper!(NUM_PROCS));*/
-    /*let scheduler =
-    components::sched::mlfq::MLFQComponent::new(board_kernel, mux_alarm, &PROCESSES).finalize(
-        components::mlfq_component_helper!(sam4l::ast::Ast, NUM_PROCS),
-    );*/
+    let scheduler =
+        components::sched::mlfq::MLFQComponent::new(board_kernel, mux_alarm, &PROCESSES).finalize(
+            components::mlfq_component_helper!(sam4l::ast::Ast, NUM_PROCS),
+        );
     scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
 }

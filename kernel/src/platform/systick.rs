@@ -18,6 +18,11 @@ pub trait SysTick {
     /// accurate and values up to 400ms are valid.
     fn set_timer(&self, us: u32);
 
+    /// Returns true if this is a dummy (non functional) systick
+    fn dummy(&self) -> bool {
+        false
+    }
+
     /// Returns if there is at least `us` microseconds left
     fn greater_than(&self, us: u32) -> bool;
 
@@ -47,6 +52,10 @@ pub trait SysTick {
 /// interrupt non-yielding processes.
 impl SysTick for () {
     fn reset(&self) {}
+
+    fn dummy(&self) -> bool {
+        true
+    }
 
     fn set_timer(&self, _: u32) {}
 

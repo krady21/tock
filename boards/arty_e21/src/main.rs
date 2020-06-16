@@ -247,8 +247,9 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    let scheduler = components::cooperative::CooperativeComponent::new(board_kernel, &PROCESSES)
-        .finalize(components::coop_component_helper!(NUM_PROCS));
+    let scheduler =
+        components::sched::cooperative::CooperativeComponent::new(board_kernel, &PROCESSES)
+            .finalize(components::coop_component_helper!(NUM_PROCS));
 
     scheduler.kernel_loop(&artye21, chip, None, &main_loop_cap);
 }
