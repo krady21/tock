@@ -7,17 +7,18 @@
 // https://github.com/rust-lang/rust/issues/62184.
 #![cfg_attr(not(doc), no_main)]
 #![feature(core_intrinsics)]
+#![feature(const_in_array_repeat_expressions)]
 #![deny(missing_docs)]
 
 use capsules::lsm303dlhc;
 use capsules::virtual_alarm::VirtualMuxAlarm;
 use components::gpio::GpioComponent;
-use kernel::capabilities;
 use kernel::common::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
 use kernel::component::Component;
 use kernel::hil::gpio::Configure;
 use kernel::hil::gpio::Output;
 use kernel::Platform;
+use kernel::{capabilities, Scheduler};
 use kernel::{create_capability, debug, static_init};
 
 /// Support routines for debugging I/O.
@@ -551,7 +552,10 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    board_kernel.kernel_loop(
+    let scheduler =
+        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
+            .finalize(components::rr_component_helper!(NUM_PROCS));
+    scheduler.kernel_loop(
         &stm32f3discovery,
         chip,
         Some(&stm32f3discovery.ipc),

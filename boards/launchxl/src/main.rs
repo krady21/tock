@@ -2,6 +2,7 @@
 // Disable this attribute when documenting, as a workaround for
 // https://github.com/rust-lang/rust/issues/62184.
 #![cfg_attr(not(doc), no_main)]
+#![feature(const_in_array_repeat_expressions)]
 
 extern crate capsules;
 extern crate cc26x2;
@@ -14,13 +15,13 @@ use kernel::{create_capability, debug, debug_gpio, static_init};
 use cc26x2::aon;
 use cc26x2::prcm;
 use cc26x2::pwm;
-use kernel::capabilities;
 use kernel::common::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
 use kernel::component::Component;
 use kernel::hil;
 use kernel::hil::entropy::Entropy32;
 use kernel::hil::i2c::I2CMaster;
 use kernel::hil::rng::Rng;
+use kernel::{capabilities, Scheduler};
 
 pub mod io;
 
@@ -358,5 +359,8 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    board_kernel.kernel_loop(&launchxl, chip, Some(&launchxl.ipc), &main_loop_capability);
+    let scheduler =
+        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
+            .finalize(components::rr_component_helper!(NUM_PROCS));
+    scheduler.kernel_loop(&launchxl, chip, Some(&launchxl.ipc), &main_loop_capability);
 }

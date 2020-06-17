@@ -17,7 +17,6 @@ use capsules::net::ipv6::ip_utils::IPAddr;
 use capsules::virtual_alarm::VirtualMuxAlarm;
 use capsules::virtual_i2c::MuxI2C;
 use capsules::virtual_spi::VirtualSpiMasterDevice;
-use kernel::capabilities;
 use kernel::common::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
 use kernel::component::Component;
 use kernel::hil::i2c::I2CMaster;
@@ -25,8 +24,9 @@ use kernel::hil::radio;
 #[allow(unused_imports)]
 use kernel::hil::radio::{RadioConfig, RadioData};
 use kernel::hil::Controller;
+use kernel::{capabilities, Scheduler};
 #[allow(unused_imports)]
-use kernel::{create_capability, debug, debug_gpio, static_init, Scheduler};
+use kernel::{create_capability, debug, debug_gpio, static_init};
 
 use components;
 use components::alarm::{AlarmDriverComponent, AlarmMuxComponent};
