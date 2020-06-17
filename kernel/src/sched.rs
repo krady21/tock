@@ -5,6 +5,7 @@
 
 pub(crate) mod cooperative;
 pub(crate) mod mlfq;
+pub(crate) mod priority;
 pub(crate) mod round_robin;
 
 use core::cell::Cell;

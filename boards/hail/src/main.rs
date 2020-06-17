@@ -7,18 +7,19 @@
 // Disable this attribute when documenting, as a workaround for
 // https://github.com/rust-lang/rust/issues/62184.
 #![cfg_attr(not(doc), no_main)]
+#![feature(const_in_array_repeat_expressions)]
 #![deny(missing_docs)]
 
 use capsules::virtual_alarm::VirtualMuxAlarm;
 use capsules::virtual_i2c::{I2CDevice, MuxI2C};
 use capsules::virtual_spi::VirtualSpiMasterDevice;
-use kernel::capabilities;
 use kernel::common::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
 use kernel::component::Component;
 use kernel::hil;
 use kernel::hil::i2c::I2CMaster;
 use kernel::hil::Controller;
 use kernel::Platform;
+use kernel::{capabilities, Scheduler};
 #[allow(unused_imports)]
 use kernel::{create_capability, debug, debug_gpio, static_init};
 
@@ -466,5 +467,8 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    board_kernel.kernel_loop(&hail, chip, Some(&hail.ipc), &main_loop_capability);
+    let scheduler =
+        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
+            .finalize(components::rr_component_helper!(NUM_PROCS));
+    scheduler.kernel_loop(&hail, chip, Some(&hail.ipc), &main_loop_capability);
 }

@@ -14,17 +14,21 @@
 // Author: Hudson Ayers <hayers@stanford.edu>
 // Last modified: 03/31/2020
 
+use core::mem::MaybeUninit;
 use kernel::component::Component;
 use kernel::procs::ProcessType;
-use kernel::static_init;
+use kernel::{static_init, static_init_half};
 use kernel::{RoundRobinProcessNode, RoundRobinSched};
 
 #[macro_export]
 macro_rules! rr_component_helper {
     ($N:expr) => {{
-        use kernel::static_init;
+        use core::mem::MaybeUninit;
+        use kernel::static_buf;
         use kernel::RoundRobinProcessNode;
-        static_init!([Option<RoundRobinProcessNode<'static>>; $N], [None; $N])
+        static mut BUF: [MaybeUninit<RoundRobinProcessNode<'static>>; $N] =
+            [MaybeUninit::uninit(); $N];
+        &mut BUF
     };};
 }
 
@@ -39,35 +43,30 @@ impl RoundRobinComponent {
         processes: &'static [Option<&'static dyn ProcessType>],
     ) -> RoundRobinComponent {
         RoundRobinComponent {
-            board_kernel: board_kernel,
-            processes: processes,
+            board_kernel,
+            processes,
         }
     }
 }
 
 impl Component for RoundRobinComponent {
-    type StaticInput = &'static mut [Option<RoundRobinProcessNode<'static>>];
+    type StaticInput = &'static mut [MaybeUninit<RoundRobinProcessNode<'static>>];
     type Output = &'static mut RoundRobinSched<'static>;
 
-    unsafe fn finalize(self, proc_nodes: Self::StaticInput) -> Self::Output {
+    unsafe fn finalize(self, buf: Self::StaticInput) -> Self::Output {
         let scheduler = static_init!(
             RoundRobinSched<'static>,
             RoundRobinSched::new(self.board_kernel)
         );
-        let num_procs = proc_nodes.len();
 
-        for i in 0..num_procs {
+        for (i, node) in buf.iter_mut().enumerate() {
             if self.processes[i].is_some() {
-                proc_nodes[i] = Some(RoundRobinProcessNode::new(
-                    self.processes[i].unwrap().appid(),
-                ));
-            }
-        }
-        for i in 0..num_procs {
-            if self.processes[i].is_some() {
-                scheduler
-                    .processes
-                    .push_head(proc_nodes[i].as_ref().unwrap());
+                let init_node = static_init_half!(
+                    node,
+                    RoundRobinProcessNode<'static>,
+                    RoundRobinProcessNode::new(self.processes[i].unwrap().appid(),)
+                );
+                scheduler.processes.push_head(init_node);
             }
         }
         scheduler

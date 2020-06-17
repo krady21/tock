@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(const_in_array_repeat_expressions)]
 
 pub mod alarm;
 pub mod analog_comparator;
