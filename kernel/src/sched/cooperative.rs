@@ -57,7 +57,7 @@ impl<'a> Scheduler for CooperativeSched<'a> {
         chip: &C,
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
-    ) {
+    ) -> ! {
         let mut reschedule;
         loop {
             unsafe {

@@ -39,7 +39,7 @@ pub trait Scheduler {
         chip: &C,
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
-    );
+    ) -> !;
 }
 
 /// Main object for the kernel. Each board will need to create one.

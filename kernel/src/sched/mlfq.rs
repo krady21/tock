@@ -135,7 +135,7 @@ impl<'a, A: 'static + time::Alarm<'static>> Scheduler for MLFQSched<'a, A> {
         chip: &C,
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
-    ) {
+    ) -> ! {
         assert!(!chip.systick().dummy());
         let delta = (Self::PRIORITY_REFRESH_PERIOD_MS * A::Frequency::frequency()) / 1000;
         let mut next_reset = self.alarm.now().wrapping_add(delta);

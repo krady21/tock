@@ -35,7 +35,7 @@ impl Scheduler for PrioritySched {
         chip: &C,
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
-    ) {
+    ) -> ! {
         loop {
             unsafe {
                 chip.service_pending_interrupts();

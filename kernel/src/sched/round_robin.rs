@@ -68,7 +68,7 @@ impl<'a> Scheduler for RoundRobinSched<'a> {
         chip: &C,
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
-    ) {
+    ) -> ! {
         assert!(!chip.systick().dummy());
         let mut reschedule = false;
         loop {
