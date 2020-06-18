@@ -171,7 +171,7 @@ impl<'a, A: 'static + time::Alarm<'static>> Scheduler for MLFQSched<'a, A> {
                             chip.systick(),
                             process,
                             ipc,
-                            self.get_timeslice_us(queue_idx),
+                            Some(self.get_timeslice_us(queue_idx)),
                             false,
                         );
                         node_ref.state.us_used_this_queue.set(timeslice - time_used);

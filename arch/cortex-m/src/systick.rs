@@ -134,9 +134,8 @@ impl kernel::SysTick for SysTick {
 
     fn get_value(&self) -> u32 {
         let tics = SYSTICK_BASE.syst_cvr.read(CurrentValue::CURRENT);
-        //let hertz = self.hertz();
-        //tics * 1_000_000 / hertz
-        tics
+        let hertz = self.hertz();
+        tics * 1_000_000 / hertz
     }
 
     fn overflowed(&self) -> bool {

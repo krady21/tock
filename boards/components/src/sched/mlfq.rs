@@ -4,13 +4,13 @@
 //!
 //! Usage
 //! -----
-//! (Must be final lines in main.rs)
+//! Note that `kernel_loop` never returns, thus this must end main.rs
 //! ```rust
 //! let scheduler =
 //!     components::mlfq::MLFQComponent::new(board_kernel, mux_alarm, &PROCESSES).finalize(
 //!         components::mlfq_component_helper!(sam4l::ast::Ast, NUM_PROCS),
 //!     );
-//! scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
+//! scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap)
 //! ```
 
 // Author: Hudson Ayers <hayers@stanford.edu>

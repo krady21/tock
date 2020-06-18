@@ -99,7 +99,7 @@ impl<'a> Scheduler for RoundRobinSched<'a> {
                             chip.systick(),
                             process,
                             ipc,
-                            timeslice,
+                            Some(timeslice),
                             true,
                         );
                         self.time_remaining

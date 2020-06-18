@@ -4,11 +4,11 @@
 //!
 //! Usage
 //! -----
-//! (Must be final lines in main.rs)
+//! Note that `kernel_loop` never returns, thus this must end main.rs
 //! ```rust
 //! let scheduler = components::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
 //!     .finalize(components::rr_component_helper!(NUM_PROCS));
-//! scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
+//! scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap)
 //! ```
 
 // Author: Hudson Ayers <hayers@stanford.edu>

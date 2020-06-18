@@ -76,7 +76,7 @@ impl<'a> Scheduler for CooperativeSched<'a> {
                     self.kernel.process_map_or((), next, |process| {
                         reschedule = match self
                             .kernel
-                            .do_process(platform, chip, &(), process, ipc, 0, true)
+                            .do_process(platform, chip, &(), process, ipc, None, true)
                             .0
                         {
                             StoppedExecutingReason::KernelPreemption => true,

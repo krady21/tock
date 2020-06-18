@@ -51,7 +51,7 @@ impl Scheduler for PrioritySched {
                     for p in self.kernel.processes.iter() {
                         p.map(|process| {
                             self.kernel
-                                .do_process(platform, chip, &(), process, ipc, 0, true)
+                                .do_process(platform, chip, &(), process, ipc, None, true)
                         });
                         if chip.has_pending_interrupts()
                             || DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)

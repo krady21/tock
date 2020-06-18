@@ -4,11 +4,11 @@
 //!
 //! Usage
 //! -----
-//! (Must be final lines in main.rs)
+//! Note that `kernel_loop` never returns, thus this must end main.rs
 //! ```rust
 //! let scheduler =
 //!     components::priority::PriorityComponent::new(board_kernel).finalize(());
-//! scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
+//! scheduler.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap)
 //! ```
 
 use kernel::component::Component;

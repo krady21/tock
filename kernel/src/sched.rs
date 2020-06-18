@@ -309,6 +309,29 @@ impl Kernel {
         }
     }
 
+    /// Transfer control from the scheduler to a userspace process.
+    /// This function should be called by the scheduler to run userspace
+    /// code. Notably, when processes make system calls, the system calls
+    /// are handled in the kernel, *by the kernel thread*, but that is done
+    /// by looping within this function. This function will only return
+    /// control to the scheduler if a process yields with no callbacks pending,
+    /// exceeds its timeslice, or is interrupted.
+    /// Depending on the particular scheduler in use, this function can be configured
+    /// to act in a few different ways. `break_for_kernel_tasks` allows the
+    /// scheduler to tell the Kernel whether to return control to the scheduler as soon
+    /// as a kernel task becomes ready (either a bottom half interrupt handler or
+    /// dynamic deferred call), or to continue executing the userspace process
+    /// until it reaches one of the aforementioned stopping conditions.
+    /// Some schedulers may not require a systick, so a dummy systick implementation
+    /// can be passed to remove overhead from those calls. Schedulers can
+    /// pass a timeslice (in us) of their choice, though if the passed timeslice
+    /// is smalled than MIN_QUANTA_THRESHOLD_US the process will not execute, and
+    /// this function will return immediately.
+    /// This function returns a tuple indicating the reason the reason this function
+    /// has returned to the scheduler, and the amount of time the process spent
+    /// executing. Notably, time spent in this function by the kernel, executing system
+    /// calls or merely setting up the switch to/from userspace, is charged to the
+    /// process.
     unsafe fn do_process<P: Platform, C: Chip, S: SysTick>(
         &self,
         platform: &P,
@@ -316,11 +339,11 @@ impl Kernel {
         systick: &S,
         process: &dyn process::ProcessType,
         ipc: Option<&crate::ipc::IPC>,
-        timeslice_us: u32,
+        timeslice_us: Option<u32>,
         break_for_kernel_tasks: bool,
     ) -> (StoppedExecutingReason, u32) {
         systick.reset();
-        systick.set_timer(timeslice_us);
+        timeslice_us.map(|time| systick.set_timer(time));
         systick.enable(false);
         let mut return_reason = StoppedExecutingReason::NoWorkLeft;
 
@@ -596,8 +619,11 @@ impl Kernel {
                 }
             }
         }
+        let time_executed_us = u32::min(
+            timeslice_us.unwrap_or(0) - systick.get_value(),
+            timeslice_us.unwrap_or(0),
+        ); //min is to protect from wrapping systick value
         systick.reset();
-        let time_executed_us = u32::min(timeslice_us - systick.get_value(), timeslice_us); //min is to protect from wrapping systick value
         (return_reason, time_executed_us)
     }
 }
