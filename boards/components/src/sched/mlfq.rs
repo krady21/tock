@@ -1,6 +1,7 @@
 //! Component for a multi-level feedback queue scheduler.
 //!
 //! This provides one Component, MLFQComponent.
+//! https://en.wikipedia.org/wiki/Multilevel_feedback_queue
 //!
 //! Usage
 //! -----
