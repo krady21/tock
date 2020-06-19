@@ -53,10 +53,10 @@ static mut APP_MEMORY: [u8; 0x10000] = [0; 0x10000];
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
 pub struct Platform {
-    gpio: &'static capsules::gpio::GPIO<'static, cc26x2::gpio::GPIOPin>,
-    led: &'static capsules::led::LED<'static, cc26x2::gpio::GPIOPin>,
+    gpio: &'static capsules::gpio::GPIO<'static, cc26x2::gpio::GPIOPin<'static>>,
+    led: &'static capsules::led::LED<'static, cc26x2::gpio::GPIOPin<'static>>,
     console: &'static capsules::console::Console<'static>,
-    button: &'static capsules::button::Button<'static, cc26x2::gpio::GPIOPin>,
+    button: &'static capsules::button::Button<'static, cc26x2::gpio::GPIOPin<'static>>,
     alarm: &'static capsules::alarm::AlarmDriver<
         'static,
         capsules::virtual_alarm::VirtualMuxAlarm<'static, cc26x2::rtc::Rtc<'static>>,

@@ -42,16 +42,16 @@ struct GpioRegisters {
     pub evflags: ReadWrite<u32>,
 }
 
-pub struct GPIOPin {
+pub struct GPIOPin<'a> {
     registers: StaticRef<GpioRegisters>,
     ioc_registers: StaticRef<ioc::Registers>,
     pin: usize,
     pin_mask: u32,
-    client: OptionalCell<&'static dyn hil::gpio::Client>,
+    client: OptionalCell<&'a dyn hil::gpio::Client>,
 }
 
-impl GPIOPin {
-    const fn new(pin: usize) -> GPIOPin {
+impl<'a> GPIOPin<'a> {
+    const fn new(pin: usize) -> GPIOPin<'a> {
         GPIOPin {
             registers: GPIO_BASE,
             ioc_registers: IOC_BASE,
@@ -61,7 +61,7 @@ impl GPIOPin {
         }
     }
 
-    pub fn set_client(&self, client: &'static dyn gpio::Client) {
+    pub fn set_client(&self, client: &'a dyn gpio::Client) {
         self.client.set(client);
     }
 
@@ -89,7 +89,7 @@ impl GPIOPin {
 }
 
 /// Pinmux implementation (IOC)
-impl GPIOPin {
+impl GPIOPin<'_> {
     fn standard_io(
         &self,
         port_id: FieldValue<u32, ioc::Config::Register>,
@@ -278,10 +278,10 @@ impl GPIOPin {
     }
 }
 
-impl gpio::Pin for GPIOPin {}
-impl gpio::InterruptPin for GPIOPin {}
+impl<'a> gpio::Pin for GPIOPin<'a> {}
+impl<'a> gpio::InterruptPin<'a> for GPIOPin<'a> {}
 
-impl gpio::Configure for GPIOPin {
+impl gpio::Configure for GPIOPin<'_> {
     fn set_floating_state(&self, mode: gpio::FloatingState) {
         let pin_ioc = &self.ioc_registers.cfg[self.pin];
 
@@ -359,14 +359,14 @@ impl gpio::Configure for GPIOPin {
     }
 }
 
-impl gpio::Input for GPIOPin {
+impl gpio::Input for GPIOPin<'_> {
     fn read(&self) -> bool {
         let regs = &*self.registers;
         regs.din.get() & self.pin_mask != 0
     }
 }
 
-impl gpio::Output for GPIOPin {
+impl gpio::Output for GPIOPin<'_> {
     fn toggle(&self) -> bool {
         GPIOPin::toggle(self)
     }
@@ -380,7 +380,7 @@ impl gpio::Output for GPIOPin {
     }
 }
 
-impl gpio::Interrupt for GPIOPin {
+impl<'a> gpio::Interrupt<'a> for GPIOPin<'a> {
     fn enable_interrupts(&self, mode: gpio::InterruptEdge) {
         self.enable_int(mode);
     }
@@ -389,7 +389,7 @@ impl gpio::Interrupt for GPIOPin {
         self.disable_interrupt();
     }
 
-    fn set_client(&self, client: &'static dyn gpio::Client) {
+    fn set_client(&self, client: &'a dyn gpio::Client) {
         GPIOPin::set_client(self, client);
     }
 
@@ -398,26 +398,26 @@ impl gpio::Interrupt for GPIOPin {
     }
 }
 
-pub struct Port {
+pub struct Port<'a> {
     nvic: &'static nvic::Nvic,
-    pins: [GPIOPin; NUM_PINS],
+    pins: [GPIOPin<'a>; NUM_PINS],
 }
 
-impl Index<usize> for Port {
-    type Output = GPIOPin;
+impl<'a> Index<usize> for Port<'a> {
+    type Output = GPIOPin<'a>;
 
-    fn index(&self, index: usize) -> &GPIOPin {
+    fn index(&self, index: usize) -> &GPIOPin<'a> {
         &self.pins[index]
     }
 }
 
-impl IndexMut<usize> for Port {
-    fn index_mut(&mut self, index: usize) -> &mut GPIOPin {
+impl<'a> IndexMut<usize> for Port<'a> {
+    fn index_mut(&mut self, index: usize) -> &mut GPIOPin<'a> {
         &mut self.pins[index]
     }
 }
 
-impl Port {
+impl Port<'_> {
     pub fn handle_interrupt(&self) {
         let regs = GPIO_BASE;
         let mut evflags = regs.evflags.get();
