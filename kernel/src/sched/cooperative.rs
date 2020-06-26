@@ -52,7 +52,7 @@ impl<'a> CooperativeSched<'a> {
 impl<'a> Scheduler for CooperativeSched<'a> {
     /// Main loop.
     fn kernel_loop<P: Platform, C: Chip>(
-        &mut self,
+        &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC>,

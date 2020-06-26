@@ -63,7 +63,7 @@ impl<'a> RoundRobinSched<'a> {
 impl<'a> Scheduler for RoundRobinSched<'a> {
     /// Main loop.
     fn kernel_loop<P: Platform, C: Chip>(
-        &mut self,
+        &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC>,

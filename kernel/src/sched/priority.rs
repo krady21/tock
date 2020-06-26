@@ -30,46 +30,49 @@ impl PrioritySched {
 impl Scheduler for PrioritySched {
     /// Main loop.
     fn kernel_loop<P: Platform, C: Chip>(
-        &mut self,
+        &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC>,
         _capability: &dyn capabilities::MainLoopCapability,
     ) -> ! {
-        loop {
-            unsafe {
-                chip.service_pending_interrupts();
-                DynamicDeferredCall::call_global_instance_while(|| !chip.has_pending_interrupts());
-
-                loop {
-                    if chip.has_pending_interrupts()
-                        || DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
-                        || self.kernel.processes_blocked()
-                    {
-                        break;
-                    }
-                    for p in self.kernel.processes.iter() {
-                        p.map(|process| {
-                            self.kernel
-                                .do_process(platform, chip, &(), process, ipc, None, true)
-                        });
-                        if chip.has_pending_interrupts()
-                            || DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
-                        {
-                            break;
-                        }
-                    }
-                }
-
-                chip.atomic(|| {
-                    if !chip.has_pending_interrupts()
-                        && !DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
-                        && self.kernel.processes_blocked()
-                    {
-                        chip.sleep();
-                    }
+        self.kernel.kernel_loop(platform, chip, ipc, || unsafe {
+            for p in self.kernel.processes.iter() {
+                p.map(|process| {
+                    self.kernel
+                        .do_process(platform, chip, &(), process, ipc, None, true)
                 });
-            };
-        }
+                if chip.has_pending_interrupts()
+                    || DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        })
+        // loop {
+        //     unsafe {
+        //         chip.service_pending_interrupts();
+        //         DynamicDeferredCall::call_global_instance_while(|| !chip.has_pending_interrupts());
+
+        //         loop {
+        //             if chip.has_pending_interrupts()
+        //                 || DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
+        //                 || self.kernel.processes_blocked()
+        //             {
+        //                 break;
+        //             }
+
+        //         }
+
+        //         chip.atomic(|| {
+        //             if !chip.has_pending_interrupts()
+        //                 && !DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
+        //                 && self.kernel.processes_blocked()
+        //             {
+        //                 chip.sleep();
+        //             }
+        //         });
+        //     };
+        // }
     }
 }

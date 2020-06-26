@@ -34,7 +34,7 @@ const MIN_QUANTA_THRESHOLD_US: u32 = 500;
 pub trait Scheduler {
     /// This function should be the last call in main.rs and should never return.
     fn kernel_loop<P: Platform, C: Chip>(
-        &mut self,
+        &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC>,
@@ -306,6 +306,44 @@ impl Kernel {
             p.map(|process| {
                 process.set_fault_state();
             });
+        }
+    }
+
+    /// Main loop.
+    fn kernel_loop<P: Platform, C: Chip, F>(
+        &self,
+        platform: &P,
+        chip: &C,
+        ipc: Option<&ipc::IPC>,
+        fun: F,
+    ) -> !
+    where
+        F: Fn(),
+    {
+        loop {
+            unsafe {
+                chip.service_pending_interrupts();
+                DynamicDeferredCall::call_global_instance_while(|| !chip.has_pending_interrupts());
+
+                loop {
+                    if chip.has_pending_interrupts()
+                        || DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
+                        || self.processes_blocked()
+                    {
+                        break;
+                    }
+                    fun();
+                }
+
+                chip.atomic(|| {
+                    if !chip.has_pending_interrupts()
+                        && !DynamicDeferredCall::global_instance_calls_pending().unwrap_or(false)
+                        && self.processes_blocked()
+                    {
+                        chip.sleep();
+                    }
+                });
+            };
         }
     }
 

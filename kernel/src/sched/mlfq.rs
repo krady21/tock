@@ -130,7 +130,7 @@ impl<'a, A: 'static + time::Alarm<'static>> MLFQSched<'a, A> {
 impl<'a, A: 'static + time::Alarm<'static>> Scheduler for MLFQSched<'a, A> {
     /// Main loop.
     fn kernel_loop<P: Platform, C: Chip>(
-        &mut self,
+        &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC>,
