@@ -3,10 +3,10 @@
 //! utility functions to reduce repeated code between different scheduler
 //! implementations.
 
-pub(crate) mod cooperative;
-pub(crate) mod mlfq;
+// pub(crate) mod cooperative;
+// pub(crate) mod mlfq;
 pub(crate) mod priority;
-pub(crate) mod round_robin;
+// pub(crate) mod round_robin;
 
 use core::cell::Cell;
 use core::ptr::NonNull;
@@ -33,13 +33,17 @@ const MIN_QUANTA_THRESHOLD_US: u32 = 500;
 /// Trait which any scheduler must implement.
 pub trait Scheduler {
     /// This function should be the last call in main.rs and should never return.
-    fn kernel_loop<P: Platform, C: Chip>(
-        &self,
-        platform: &P,
-        chip: &C,
-        ipc: Option<&ipc::IPC>,
-        _capability: &dyn capabilities::MainLoopCapability,
-    ) -> !;
+    // fn kernel_loop<P: Platform, C: Chip>(
+    //     &self,
+    //     platform: &P,
+    //     chip: &C,
+    //     ipc: Option<&ipc::IPC>,
+    //     _capability: &dyn capabilities::MainLoopCapability,
+    // ) -> !;
+
+    fn next(&self) -> (Option<&'static dyn process::ProcessType>, u32);
+
+    fn result(&self, result: StoppedExecutingReason);
 }
 
 /// Main object for the kernel. Each board will need to create one.
@@ -68,7 +72,7 @@ pub struct Kernel {
 }
 
 #[derive(PartialEq, Eq)]
-pub(crate) enum StoppedExecutingReason {
+pub enum StoppedExecutingReason {
     NoWorkLeft,
     TimesliceExpired,
     KernelPreemption,
@@ -310,15 +314,16 @@ impl Kernel {
     }
 
     /// Main loop.
-    fn kernel_loop<P: Platform, C: Chip, F>(
+    pub fn kernel_loop<P: Platform, C: Chip, SC: Scheduler>(
         &self,
         platform: &P,
         chip: &C,
         ipc: Option<&ipc::IPC>,
-        fun: F,
+        scheduler: &SC,
+        _capability: &dyn capabilities::MainLoopCapability, // fun: F,
     ) -> !
-    where
-        F: Fn(),
+// where
+    //     F: Fn(),
     {
         loop {
             unsafe {
@@ -332,7 +337,13 @@ impl Kernel {
                     {
                         break;
                     }
-                    fun();
+                    // f
+                    let (process, timeslice_us) = scheduler.next();
+                    process.map(|process| {
+                        let reason =
+                            self.do_process(platform, chip, process, ipc, timeslice_us, true);
+                        scheduler.result(reason.0);
+                    });
                 }
 
                 chip.atomic(|| {
@@ -370,23 +381,30 @@ impl Kernel {
     /// executing. Notably, time spent in this function by the kernel, executing system
     /// calls or merely setting up the switch to/from userspace, is charged to the
     /// process.
-    unsafe fn do_process<P: Platform, C: Chip, S: SysTick>(
+    unsafe fn do_process<P: Platform, C: Chip>(
         &self,
         platform: &P,
         chip: &C,
-        systick: &S,
+        // systick: &S,
         process: &dyn process::ProcessType,
         ipc: Option<&crate::ipc::IPC>,
-        timeslice_us: Option<u32>,
+        timeslice_us: u32,
         break_for_kernel_tasks: bool,
     ) -> (StoppedExecutingReason, u32) {
-        systick.reset();
-        timeslice_us.map(|time| systick.set_timer(time));
-        systick.enable(false);
+        let systick = if timeslice_us > 0 {
+            Some(chip.systick())
+        } else {
+            None
+        };
+        systick.map(|st| st.reset());
+        systick.map(|st| st.set_timer(timeslice_us));
+        systick.map(|st| st.enable(false));
         let mut return_reason = StoppedExecutingReason::NoWorkLeft;
 
         loop {
-            if systick.overflowed() || !systick.greater_than(MIN_QUANTA_THRESHOLD_US) {
+            if systick.map_or(false, |st| st.overflowed())
+                || !systick.map_or(true, |st| st.greater_than(MIN_QUANTA_THRESHOLD_US))
+            {
                 process.debug_timeslice_expired();
                 return_reason = StoppedExecutingReason::TimesliceExpired;
                 break;
@@ -407,9 +425,9 @@ impl Kernel {
                     // the process.
                     process.setup_mpu();
                     chip.mpu().enable_mpu();
-                    systick.enable(true);
+                    systick.map(|st| st.enable(true));
                     let context_switch_reason = process.switch_to();
-                    systick.enable(false);
+                    systick.map(|st| st.enable(false));
                     chip.mpu().disable_mpu();
 
                     // Now the process has returned back to the kernel. Check
@@ -658,10 +676,10 @@ impl Kernel {
             }
         }
         let time_executed_us = u32::min(
-            timeslice_us.unwrap_or(0) - systick.get_value(),
-            timeslice_us.unwrap_or(0),
+            timeslice_us - systick.map_or(0, |st| st.get_value()),
+            timeslice_us,
         ); //min is to protect from wrapping systick value
-        systick.reset();
+        systick.map(|st| st.reset());
         (return_reason, time_executed_us)
     }
 }

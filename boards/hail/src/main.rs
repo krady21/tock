@@ -467,8 +467,12 @@ pub unsafe fn reset_handler() {
         debug!("{:?}", err);
     });
 
-    let scheduler =
-        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
-            .finalize(components::rr_component_helper!(NUM_PROCS));
-    scheduler.kernel_loop(&hail, chip, Some(&hail.ipc), &main_loop_capability);
+    let scheduler = components::sched::priority::PriorityComponent::new(board_kernel).finalize(());
+    board_kernel.kernel_loop(
+        &hail,
+        chip,
+        Some(&hail.ipc),
+        scheduler,
+        &main_loop_capability,
+    );
 }

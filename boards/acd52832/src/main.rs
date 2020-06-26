@@ -501,7 +501,6 @@ pub unsafe fn reset_handler() {
     });
 
     let scheduler =
-        components::sched::round_robin::RoundRobinComponent::new(board_kernel, &PROCESSES)
-            .finalize(components::rr_component_helper!(NUM_PROCS));
-    scheduler.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
+        components::sched::priority::PriorityComponent::new(board_kernel, &PROCESSES).finalize(());
+    board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
 }
