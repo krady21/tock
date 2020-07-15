@@ -12,6 +12,7 @@ use crate::nvic;
 use crate::spi;
 use crate::tim2;
 use crate::usart;
+use crate::flash;
 
 pub struct Stm32f3xx {
     mpu: cortexm4::mpu::MPU,
@@ -49,6 +50,8 @@ impl Chip for Stm32f3xx {
                         nvic::I2C1_EV => i2c::I2C1.handle_event(),
                         nvic::I2C1_ER => i2c::I2C1.handle_error(),
                         nvic::ADC1_2 => adc::ADC1.handle_interrupt(),
+
+                        nvic::FLASH => flash::FLASH.handle_interrupt(),
 
                         nvic::EXTI0 => exti::EXTI.handle_interrupt(),
                         nvic::EXTI1 => exti::EXTI.handle_interrupt(),
