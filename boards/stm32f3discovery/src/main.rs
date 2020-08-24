@@ -26,6 +26,9 @@ pub mod io;
 #[allow(dead_code)]
 mod virtual_uart_rx_test;
 
+#[allow(dead_code)]
+mod flash_test;
+
 // Number of concurrent processes this platform supports.
 const NUM_PROCS: usize = 4;
 
@@ -638,6 +641,29 @@ pub unsafe fn reset_handler() {
         /// End of the RAM region for app memory.
         static _eappmem: u8;
     }
+
+    use stm32f303xc::flash::*;
+    use kernel::hil::flash::HasClient;
+    use flash_test::FlashUser;
+
+    debug!("Starting flash tests.");
+
+    let page = unsafe { static_init!(StmF303Page, StmF303Page::default()) };
+    // PAGE[0] = 120 as u8;
+    // PAGE[1] = 240 as u8;
+    // PAGE[2] = 3 as u8;
+    // PAGE[3] = 69 as u8;
+    for i in 0..2048 {
+        page[i] = (i % 256) as u8;
+    }
+
+    let flash_test = static_init!(FlashUser<'static>, FlashUser::new(&FLASH, page));
+
+    FLASH.set_client(flash_test);
+    flash_test.test_erase();
+    // flash_test.test_write();
+    // flash_test.test_read();
+    // flash_test.start_test_option();
 
     kernel::procs::load_processes(
         board_kernel,

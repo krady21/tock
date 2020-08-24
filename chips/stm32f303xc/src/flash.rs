@@ -17,7 +17,7 @@ use kernel::ReturnCode;
 use crate::deferred_call_tasks::DeferredCallTask;
 
 const FLASH_BASE: StaticRef<FlashRegisters> =
-    unsafe { StaticRef::new(0x8000_0000 as *const FlashRegisters) };
+    unsafe { StaticRef::new(0x40022000 as *const FlashRegisters) };
 
 #[repr(C)]
 struct FlashRegisters {
@@ -203,6 +203,8 @@ static DEFERRED_CALL: DeferredCall<DeferredCallTask> =
     unsafe { DeferredCall::new(DeferredCallTask::Flash) };
 
 const PAGE_SIZE: usize = 2048;
+const PAGE_START: usize = 0x08000000;
+const OPT_START: usize = 0x1FFFF800;
 
 pub struct StmF303Page(pub [u8; PAGE_SIZE as usize]);
 
@@ -242,10 +244,12 @@ impl AsMut<[u8]> for StmF303Page {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum FlashState {
-    Ready,
-    Read,
-    Write,
-    Erase,
+    Ready, // Entry state
+    Read, // Read procedure
+    Write, // Programming procedure
+    Erase, // Erase procedure
+    WriteOption, // Option bytes programming procedure
+    EraseOption, // Option bytes erase procedure
 }
 
 pub static mut FLASH: Flash = Flash::new();
@@ -255,6 +259,8 @@ pub struct Flash {
     client: OptionalCell<&'static dyn hil::flash::Client<Flash>>,
     buffer: TakeCell<'static, StmF303Page>,
     state: Cell<FlashState>,
+    write_counter: Cell<usize>,
+    page_number: Cell<usize>,
 }
 
 impl Flash {
@@ -264,7 +270,14 @@ impl Flash {
             client: OptionalCell::empty(),
             buffer: TakeCell::empty(),
             state: Cell::new(FlashState::Ready),
+            write_counter: Cell::new(0),
+            page_number: Cell::new(0),
         }
+    }
+
+    pub fn enable(&self) {
+        self.registers.cr.modify(Control::EOPIE::SET);
+        self.registers.cr.modify(Control::ERRIE::SET);
     }
 
     pub fn is_locked(&self) -> bool {
@@ -280,61 +293,123 @@ impl Flash {
         self.registers.cr.modify(Control::LOCK::SET);
     }
 
-    pub fn handle_interrupt(&self) {
-        let state = self.state.get();
-        self.state.set(FlashState::Ready);
+    pub fn unlock_option(&self) {
+        self.registers.okr.write(Key::KEYR.val(0x45670123));
+        self.registers.okr.write(Key::KEYR.val(0xCDEF89AB));
+    }
 
-        match state {
-            FlashState::Read => {
-                self.client.map(|client| {
-                    self.buffer.take().map(|buffer| {
-                        client.read_complete(buffer, hil::flash::Error::CommandComplete);
+    pub fn handle_interrupt(&self) {
+        // panic!("ajung in handle");
+        if self.registers.sr.is_set(Status::EOP) {
+            // Reset by writing a 1
+            self.registers.sr.modify(Status::EOP::SET);
+
+            match self.state.get() {
+                FlashState::Write => {
+                    self.write_counter.set(self.write_counter.get() + 2);
+                    if self.write_counter.get() == PAGE_SIZE {
+                        self.write_counter.set(0);
+                        self.registers.cr.modify(Control::PG::CLEAR);
+                        self.state.set(FlashState::Ready);
+                        self.client.map(|client| {
+                            self.buffer.take().map(|buffer| {
+                                client.write_complete(buffer, hil::flash::Error::CommandComplete);
+                            });
+                        });
+                    } else {
+                        self.program_halfword();
+                    }
+                }
+                FlashState::Erase => {
+                    if self.registers.cr.is_set(Control::PER) {
+                        self.registers.cr.modify(Control::PER::CLEAR);
+                    }
+
+                    if self.registers.cr.is_set(Control::MER) {
+                        self.registers.cr.modify(Control::MER::CLEAR);
+                    }
+
+                    self.state.set(FlashState::Ready);
+                    self.client.map(|client| {
+                        client.erase_complete(hil::flash::Error::CommandComplete);
                     });
-                });
+                }
+                FlashState::WriteOption => {
+                    self.registers.cr.modify(Control::OPTPG::CLEAR);
+                    self.state.set(FlashState::Ready);
+                    // panic!("Wrote option byte");
+                }
+                FlashState::EraseOption => {
+                    self.registers.cr.modify(Control::OPTER::CLEAR);
+                    self.state.set(FlashState::Ready);
+                    panic!("Erase option byte");
+                    // self.write_option(2, 3);
+                }
+                _ => {}
             }
-            FlashState::Write => {
-                self.client.map(|client| {
-                    self.buffer.take().map(|buffer| {
-                        client.write_complete(buffer, hil::flash::Error::CommandComplete);
-                    });
-                });
-            }
-            FlashState::Erase => {
-                self.client.map(|client| {
-                    client.erase_complete(hil::flash::Error::CommandComplete);
-                });
-            }
-            _ => {}
         }
+        
+        if self.state.get() == FlashState::Read {
+            self.state.set(FlashState::Ready);
+            self.client.map(|client| {
+                self.buffer.take().map(|buffer| {
+                    client.read_complete(buffer, hil::flash::Error::CommandComplete);
+                });
+            });
+        }
+
+        if self.registers.sr.is_set(Status::WRPRTERR) {
+            if self.registers.cr.is_set(Control::PG) {
+                self.registers.cr.modify(Control::PG::CLEAR);
+            }
+
+            if self.registers.cr.is_set(Control::OPTPG) {
+                self.registers.cr.modify(Control::OPTPG::CLEAR);
+            }
+
+            self.registers.sr.modify(Status::WRPRTERR::SET);
+            self.registers.cr.modify(Control::ERRIE::CLEAR);
+            panic!("WRPRTERR: programming a write-protected address");
+        }
+
+        if self.registers.sr.is_set(Status::PGERR) {
+            if self.registers.cr.is_set(Control::PG) {
+                self.registers.cr.modify(Control::PG::CLEAR);
+            }
+
+            if self.registers.cr.is_set(Control::OPTPG) {
+                self.registers.cr.modify(Control::OPTPG::CLEAR);
+            }
+
+            self.registers.sr.modify(Status::PGERR::SET);
+            self.registers.cr.modify(Control::ERRIE::CLEAR);
+            panic!("PGERR: address was not erased before programming");
+        }
+
     }
 
     pub fn erase_page(&self, page_number: usize) -> ReturnCode {
+        if page_number > 128 {
+            return ReturnCode::EINVAL;
+        }
+
         if self.is_locked() {
             self.unlock();
         }
 
-        // Wait for the busy bit to be reset
-        while !self.registers.sr.is_set(Status::BSY) {}
+        self.enable();
+
+        while self.registers.sr.is_set(Status::BSY) {}
+        self.state.set(FlashState::Erase);
 
         // Choose page erase mode
         self.registers.cr.modify(Control::PER::SET);
         self.registers
             .ar
-            .write(Address::FAR.val((page_number * PAGE_SIZE) as u32));
+            .write(Address::FAR.val((PAGE_START + page_number * PAGE_SIZE) as u32));
         self.registers.cr.modify(Control::STRT::SET);
 
-        self.state.set(FlashState::Erase);
-
-        // NOTE: has to start checking one cycle after setting the strtbit
-        // Wait for the busy bit to be reset
-        while !self.registers.sr.is_set(Status::BSY) {}
-
-        if self.registers.sr.is_set(Status::EOP) {
-            self.registers.sr.modify(Status::EOP.val(0));
-            ReturnCode::SUCCESS
-        } else {
-            ReturnCode::FAIL
-        }
+        ReturnCode::SUCCESS
     }
 
     pub fn erase_all(&self) -> ReturnCode {
@@ -342,24 +417,28 @@ impl Flash {
             self.unlock();
         }
 
-        // Wait for the busy bit to be reset
-        while !self.registers.sr.is_set(Status::BSY) {}
+        self.enable();
+
+        while self.registers.sr.is_set(Status::BSY) {}
+        self.state.set(FlashState::Erase);
 
         // Choose mass erase mode
         self.registers.cr.modify(Control::MER::SET);
         self.registers.cr.modify(Control::STRT::SET);
 
-        while !self.registers.sr.is_set(Status::BSY) {}
+        ReturnCode::SUCCESS
+    }
 
-        self.state.set(FlashState::Erase);
-        DEFERRED_CALL.set();
-
-        if self.registers.sr.is_set(Status::EOP) {
-            self.registers.sr.modify(Status::EOP.val(0));
-            ReturnCode::SUCCESS
-        } else {
-            ReturnCode::FAIL
-        }
+    pub fn program_halfword(&self) {
+        self.buffer.take().map(|buffer| {
+            let i = self.write_counter.get();
+            let halfword: u16 = (buffer[i] as u16) << 0 | (buffer[i + 1] as u16) << 8;
+            let page_addr = PAGE_START + self.page_number.get() * PAGE_SIZE;
+            let address = page_addr + i;
+            let location = unsafe { &*(address as *const VolatileCell<u16>) };
+            location.set(halfword); 
+            self.buffer.replace(buffer);
+        });
     }
 
     pub fn write_page(
@@ -367,39 +446,41 @@ impl Flash {
         page_number: usize,
         buffer: &'static mut StmF303Page,
     ) -> Result<(), (ReturnCode, &'static mut StmF303Page)> {
+        if page_number > 128 {
+            return Err((ReturnCode::EINVAL, buffer));
+        }
+
         if self.is_locked() {
             self.unlock();
         }
+
+        self.enable();
+
+        while self.registers.sr.is_set(Status::BSY) {}
+        self.state.set(FlashState::Write);
+
         // Choose programming mode
         self.registers.cr.modify(Control::PG::SET);
 
-        // Perform halfword write to desired address
-        for i in (0..buffer.len()).step_by(2) {
-            let word: u16 = (buffer[i + 0] as u16) << 0 | (buffer[i + 1] as u16) << 8;
-
-            let address = ((page_number * PAGE_SIZE) + i) as u16;
-            let location = unsafe { &*(address as *const VolatileCell<u16>) };
-            location.set(word);
-        }
-
-        // Wait for the busy bit to be reset
-        while !self.registers.sr.is_set(Status::BSY) {}
-
         self.buffer.replace(buffer);
-
-        self.state.set(FlashState::Write);
-        DEFERRED_CALL.set();
+        self.page_number.set(page_number);
+        self.program_halfword();
 
         Ok(())
     }
 
-    // TODO: Verify if i have to use latency and if memory has to be erased before programming
     pub fn read_page(
         &self,
         page_number: usize,
         buffer: &'static mut StmF303Page,
     ) -> Result<(), (ReturnCode, &'static mut StmF303Page)> {
-        let mut byte: *const u8 = (page_number * PAGE_SIZE) as *const u8;
+        if page_number > 128 {
+            return Err((ReturnCode::EINVAL, buffer));
+        }
+
+        while self.registers.sr.is_set(Status::BSY) {}
+
+        let mut byte: *const u8 = (PAGE_START + page_number * PAGE_SIZE) as *const u8;
         unsafe {
             for i in 0..buffer.len() {
                 buffer[i] = *byte;
@@ -413,6 +494,44 @@ impl Flash {
         DEFERRED_CALL.set();
 
         Ok(())
+    }
+
+    /// Allows programming the 8 option bytes
+    /// 0: RDP, 1: USER, 2: DATA0, 3:DATA1, 4. WRP0, 5: WRP1, 6.WRP2, 7. WRP3
+    /// TODO: They might be out of order
+    pub fn write_option(&self, byte_nr: usize,  byte: u8) -> ReturnCode {
+        if byte_nr > 7 {
+            return ReturnCode::EINVAL;
+        }
+
+        while self.registers.sr.is_set(Status::BSY) {}
+        self.unlock();
+        self.unlock_option();
+        self.enable();
+        self.state.set(FlashState::WriteOption);
+        self.registers.cr.modify(Control::OPTPG::SET);
+
+        let address = OPT_START + byte_nr * 2;
+        // panic!("{:X?}", address);
+        let location = unsafe { &*(address as *const VolatileCell<u16>) };
+        let halfword: u16 = byte as u16;
+        // panic!("{:b}", !byte as u16);
+        location.set(halfword);
+        // panic!("{:b}", location.get());
+
+        ReturnCode::SUCCESS
+    }
+
+    pub fn erase_option(&self) -> ReturnCode {
+        while self.registers.sr.is_set(Status::BSY) {}
+        self.unlock();
+        self.unlock_option();
+        self.enable();
+        self.state.set(FlashState::EraseOption);
+        self.registers.cr.modify(Control::OPTER::SET);
+        self.registers.cr.modify(Control::STRT::SET);
+
+        ReturnCode::SUCCESS
     }
 }
 
@@ -445,3 +564,20 @@ impl hil::flash::Flash for Flash {
         self.erase_page(page_number)
     }
 }
+
+// HALL OF FAME
+// let word: u16 = ((buffer[0] as u16) << 0 | (buffer[1] as u16) << 8) as u16;
+// let word2: u16 = ((buffer[2] as u16) << 0 | (buffer[3] as u16) << 8) as u16;
+// let location = unsafe { &*(page_addr as *const VolatileCell<u16>) };
+// let location2 = unsafe { &*((page_addr + 2) as *const VolatileCell<u16>) };
+// location.set(word);
+// while self.registers.sr.is_set(Status::BSY) {}
+// location2.set(word2);
+
+        // panic!("{:X?}", location2.get());
+        // unsafe { 
+        //     llvm_asm!("
+        //         strh r2, [r1]
+        //         dsb
+        //         ":: "{r1}"(page_addr), "{r2}"(word):"r1", "r2":"volatile");
+        // }
