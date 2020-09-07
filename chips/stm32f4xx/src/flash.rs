@@ -14,9 +14,8 @@ use kernel::ReturnCode;
 
 use crate::deferred_call_tasks::DeferredCallTask;
 
-// TODO: Change address
 const FLASH_BASE: StaticRef<FlashRegisters> =
-    unsafe { StaticRef::new(0x4001E400 as *const FlashRegisters) };
+    unsafe { StaticRef::new(0x40023C00 as *const FlashRegisters) };
 
 #[repr(C)]
 struct FlashRegisters {
@@ -154,9 +153,7 @@ register_bitfields! [u32,
         /// These bits contain the value of the write-protection option bytes
         /// of sectors after reset. They can be written to program a new write
         /// protection value into flash memory.
-        NWRP OFFSET(16) NUMBITS(12) [
-            // TODO
-        ],
+        NWRP OFFSET(16) NUMBITS(12) [],
         /// Read protect
         /// These bits contain the value of the read-protection option level
         /// after reset. They can be written to program a new read protection
@@ -204,23 +201,146 @@ register_bitfields! [u32,
 /// This mechanism allows us to schedule "interrupts" even if the hardware
 /// does not support them.
 static DEFERRED_CALL: DeferredCall<DeferredCallTask> =
-    unsafe { DeferredCall::new(DeferredCallTask::Nvmc) };
+    unsafe { DeferredCall::new(DeferredCallTask::Flash) };
 
-pub struct StmF4Page();
+const SECTOR_SIZE: usize = 18432;
+
+const KEY1: u32 = 0x45670123;
+const KEY2: u32 = 0xCDEF89AB;
+
+pub struct StmF4Sector(pub [u8; SECTOR_SIZE]);
+
+impl Default for StmF4Sector {
+    fn default() -> Self {
+        Self {
+            0: [0; SECTOR_SIZE as usize],
+        }
+    }
+}
+
+impl StmF4Sector {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl Index<usize> for StmF4Sector {
+    type Output = u8;
+
+    fn index(&self, idx: usize) -> &u8 {
+        &self.0[idx]
+    }
+}
+
+impl IndexMut<usize> for StmF4Sector {
+    fn index_mut(&mut self, idx: usize) -> &mut u8 {
+        &mut self.0[idx]
+    }
+}
+
+impl AsMut<[u8]> for StmF4Sector {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
 
 pub static mut FLASH: Flash = Flash::new();
 
 /// FlashState is used to track the current state and command of the flash.
 #[derive(Clone, Copy, PartialEq)]
 pub enum FlashState {
-    // TODO
+    Ready,
+    Read,
+    Write,
+    Erase,
+    WriteOption,
+    EraseOption,
 }
 
 pub struct Flash {
     registers: StaticRef<FlashRegisters>,
     client: OptionalCell<&'static dyn hil::flash::Client<Flash>>,
-    buffer: TakeCell<'static, StmF4Page>,
+    buffer: TakeCell<'static, StmF4Sector>,
     state: Cell<FlashState>,
+}
+
+impl Flash {
+    pub const fn new() -> Flash {
+        Flash {
+            registers: FLASH_BASE,
+            client: OptionalCell::empty(),
+            buffer: TakeCell::empty(),
+            state: Cell::new(FlashState::Ready),
+        }
+    }
+
+    // Enable hardware interrupts
+    pub fn enable(&self) {
+        self.registers.cr.modify(Control::EOPIE::SET);
+        self.registers.cr.modify(Control::ERRIE::SET);
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.registers.cr.is_set(Control::LOCK)
+    }
+
+    pub fn unlock(&self) {
+        self.registers.kr.modify(Key::KEYR.val(KEY1));
+        self.registers.kr.modify(Key::KEYR.val(KEY2));
+    }
+
+    pub fn lock(&self) {
+        self.registers.cr.modify(Control::LOCK::SET);
+    }
+
+    pub fn handle_interrupt(&self) {}
+
+    pub fn read_sector(
+        &self,
+        sector_number: usize,
+        buf: &'static mut StmF4Sector,
+    ) -> Result<(), (ReturnCode, &'static mut StmF4Sector)> {
+        Ok(())
+    }
+
+    pub fn write_sector(
+        &self,
+        sector_number: usize,
+        buf: &'static mut StmF4Sector,
+    ) -> Result<(), (ReturnCode, &'static mut StmF4Sector)> {
+        Ok(())
+    }
+
+    pub fn erase_sector(&self, sector_number: usize) -> ReturnCode {
+        if self.is_locked() {
+            self.unlock();
+        }
+
+        self.enable();
+        self.state.set(FlashState::Erase);
+
+        self.registers.cr.modify(Control::SER::SET);
+        self.registers
+            .cr
+            .modify(Control::SNB.val(sector_number as u32));
+        self.registers.cr.modify(Control::STRT::SET);
+
+        ReturnCode::SUCCESS
+    }
+
+    pub fn erase_all(&self) -> ReturnCode {
+        if self.is_locked() {
+            self.unlock();
+        }
+
+        self.enable();
+        self.state.set(FlashState::Erase);
+
+        self.registers.cr.modify(Control::MER::SET);
+        self.registers.cr.modify(Control::STRT::SET);
+
+        ReturnCode::SUCCESS
+    }
 }
 
 impl<C: hil::flash::Client<Self>> hil::flash::HasClient<'static, C> for Flash {
@@ -230,14 +350,14 @@ impl<C: hil::flash::Client<Self>> hil::flash::HasClient<'static, C> for Flash {
 }
 
 impl hil::flash::Flash for Flash {
-    type Page = NrfPage;
+    type Page = StmF4Sector;
 
     fn read_page(
         &self,
         page_number: usize,
         buf: &'static mut Self::Page,
     ) -> Result<(), (ReturnCode, &'static mut Self::Page)> {
-        self.read_range(page_number, buf)
+        self.read_sector(page_number, buf)
     }
 
     fn write_page(
@@ -245,10 +365,10 @@ impl hil::flash::Flash for Flash {
         page_number: usize,
         buf: &'static mut Self::Page,
     ) -> Result<(), (ReturnCode, &'static mut Self::Page)> {
-        self.write_page(page_number, buf)
+        self.write_sector(page_number, buf)
     }
 
     fn erase_page(&self, page_number: usize) -> ReturnCode {
-        self.erase_page(page_number)
+        self.erase_sector(page_number)
     }
 }

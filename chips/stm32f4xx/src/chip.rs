@@ -7,6 +7,7 @@ use kernel::Chip;
 use crate::adc;
 use crate::dma1;
 use crate::exti;
+use crate::flash;
 use crate::i2c;
 use crate::nvic;
 use crate::spi;

@@ -15,6 +15,7 @@ pub mod adc;
 pub mod dbg;
 pub mod dma1;
 pub mod exti;
+pub mod flash;
 pub mod gpio;
 pub mod i2c;
 pub mod rcc;
