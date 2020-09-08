@@ -9,6 +9,7 @@
 
 pub mod chip;
 pub mod nvic;
+mod deferred_call_tasks;
 
 // Peripherals
 pub mod adc;

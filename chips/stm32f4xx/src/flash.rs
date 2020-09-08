@@ -2,12 +2,13 @@
 
 use core::cell::Cell;
 use core::ops::{Index, IndexMut};
+use core::ptr;
 use kernel::common::cells::OptionalCell;
 use kernel::common::cells::TakeCell;
 use kernel::common::cells::VolatileCell;
 use kernel::common::deferred_call::DeferredCall;
 use kernel::common::registers::register_bitfields;
-use kernel::common::registers::{ReadOnly, ReadWrite, WriteOnly};
+use kernel::common::registers::{ReadWrite, WriteOnly};
 use kernel::common::StaticRef;
 use kernel::hil;
 use kernel::ReturnCode;
@@ -24,10 +25,10 @@ struct FlashRegisters {
     pub acr: ReadWrite<u32, AccessControl::Register>,
     /// Flash key register
     /// Adress offset 0x04
-    pub kr: ReadWrite<u32, Key::Register>,
+    pub kr: WriteOnly<u32, Key::Register>,
     /// Flash option key register
     /// Adress offset 0x08
-    pub okr: ReadWrite<u32, Key::Register>,
+    pub okr: WriteOnly<u32, Key::Register>,
     /// Flash status register
     /// Adress offset 0x0C
     pub sr: ReadWrite<u32, Status::Register>,
@@ -95,7 +96,7 @@ register_bitfields! [u32,
         /// End of operation
         /// Set by hardware when one or more flash memory operations has/have
         /// completed successfully.
-        EOP OFFSET(0) NUMBITS(1) [],
+        EOP OFFSET(0) NUMBITS(1) []
     ],
     Control [
         /// When set, this bit indicates that the control register is locked.
@@ -166,11 +167,10 @@ register_bitfields! [u32,
         /// These bits contain the value of the user option byte after reset.
         /// They can be written to program a new user option byte value into
         /// flash memory.
-        USER [
-            NRSTSTDBY 7,
-            NRSTSTOP  6,
-            WDGSW     5
-        ],
+        /// Bit 7: NRSTSTDBY
+        /// Bit 6: NRSTSTOP
+        /// Bit 5: WDGSW
+        USER OFFSET(5) NUMBITS(3) [],
         /// BOR reset level
         /// These bits contain the supply level threshold that activates
         /// or releases the reset. They can be written to program a new BOR
@@ -203,28 +203,49 @@ register_bitfields! [u32,
 static DEFERRED_CALL: DeferredCall<DeferredCallTask> =
     unsafe { DeferredCall::new(DeferredCallTask::Flash) };
 
-const SECTOR_SIZE: usize = 18432;
-
 const KEY1: u32 = 0x45670123;
 const KEY2: u32 = 0xCDEF89AB;
 
-pub struct StmF4Sector(pub [u8; SECTOR_SIZE]);
+const OPTKEY1: u32 = 0x08192A3B;
+const OPTKEY2: u32 = 0x4C5D6E7F;
 
-impl Default for StmF4Sector {
+const PAGE_START: usize = 0x08000000;
+
+/// The stm32f4 boards use sectors instead of pages. Nevertheless,
+/// this implementation still uses pages in order to comply with the flash
+/// interface provided by the hil.
+///
+/// Sector 0  (16K):  Pages 0-7
+/// Sector 1  (16K):  Pages 8-15
+/// Sector 2  (16K):  Pages 16-23
+/// Sector 3  (16K):  Pages 24-31
+/// Sector 4  (64K):  Pages 32-63
+/// Sector 5  (128K): Pages 64-127
+/// Sector 6  (128K): Pages 128-191
+/// Sector 7  (128K): Pages 192-255
+/// Sector 8  (128K): Pages 256-319
+/// Sector 9  (128K): Pages 320-383
+/// Sector 10 (128K): Pages 384-447
+/// Sector 11 (128K): Pages 448-511
+pub struct StmF4Page(pub [u8; PAGE_SIZE]);
+
+const PAGE_SIZE: usize = 2048;
+
+impl Default for StmF4Page {
     fn default() -> Self {
         Self {
-            0: [0; SECTOR_SIZE as usize],
+            0: [0; PAGE_SIZE as usize],
         }
     }
 }
 
-impl StmF4Sector {
+impl StmF4Page {
     fn len(&self) -> usize {
         self.0.len()
     }
 }
 
-impl Index<usize> for StmF4Sector {
+impl Index<usize> for StmF4Page {
     type Output = u8;
 
     fn index(&self, idx: usize) -> &u8 {
@@ -232,13 +253,13 @@ impl Index<usize> for StmF4Sector {
     }
 }
 
-impl IndexMut<usize> for StmF4Sector {
+impl IndexMut<usize> for StmF4Page {
     fn index_mut(&mut self, idx: usize) -> &mut u8 {
         &mut self.0[idx]
     }
 }
 
-impl AsMut<[u8]> for StmF4Sector {
+impl AsMut<[u8]> for StmF4Page {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.0
     }
@@ -260,7 +281,7 @@ pub enum FlashState {
 pub struct Flash {
     registers: StaticRef<FlashRegisters>,
     client: OptionalCell<&'static dyn hil::flash::Client<Flash>>,
-    buffer: TakeCell<'static, StmF4Sector>,
+    buffer: TakeCell<'static, StmF4Page>,
     state: Cell<FlashState>,
 }
 
@@ -285,29 +306,75 @@ impl Flash {
     }
 
     pub fn unlock(&self) {
-        self.registers.kr.modify(Key::KEYR.val(KEY1));
-        self.registers.kr.modify(Key::KEYR.val(KEY2));
+        self.registers.kr.write(Key::KEYR.val(KEY1));
+        self.registers.kr.write(Key::KEYR.val(KEY2));
     }
 
     pub fn lock(&self) {
         self.registers.cr.modify(Control::LOCK::SET);
     }
 
-    pub fn handle_interrupt(&self) {}
+    pub fn handle_interrupt(&self) {
+        if self.registers.sr.is_set(Status::EOP) {
+            // Cleared by writing a 1
+            self.registers.sr.modify(Status::EOP::SET);
+            match self.state.get() {
+                FlashState::Write => {
 
-    pub fn read_sector(
+                }
+                FlashState::Erase => {
+                    if self.registers.cr.is_set(Control::SER) {
+                        self.registers.cr.modify(Control::SER::CLEAR);
+                    }
+
+                    if self.registers.cr.is_set(Control::MER) {
+                        self.registers.cr.modify(Control::MER::CLEAR);
+                    }
+
+                    self.state.set(FlashState::Ready);
+                    self.client.map(|client| {
+                        client.erase_complete(hil::flash::Error::CommandComplete);
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if self.state.get() == FlashState::Read {
+            self.state.set(FlashState::Ready);
+            self.client.map(|client| {
+                self.buffer.take().map(|buffer| {
+                    client.read_complete(buffer, hil::flash::Error::CommandComplete);
+                });
+            });
+        }
+    }
+
+    pub fn read_page(
         &self,
-        sector_number: usize,
-        buf: &'static mut StmF4Sector,
-    ) -> Result<(), (ReturnCode, &'static mut StmF4Sector)> {
+        page_number: usize,
+        buffer: &'static mut StmF4Page,
+    ) -> Result<(), (ReturnCode, &'static mut StmF4Page)> {
+        let mut byte: *const u8 = (PAGE_START + page_number * PAGE_SIZE) as *const u8;
+        unsafe {
+            for i in 0..buffer.len() {
+                buffer[i] = ptr::read_volatile(byte);
+                byte = byte.offset(1);
+            }
+        }
+
+        self.buffer.replace(buffer);
+        self.state.set(FlashState::Read);
+        DEFERRED_CALL.set();
+
         Ok(())
     }
 
-    pub fn write_sector(
+    pub fn write_page(
         &self,
-        sector_number: usize,
-        buf: &'static mut StmF4Sector,
-    ) -> Result<(), (ReturnCode, &'static mut StmF4Sector)> {
+        page_number: usize,
+        buffer: &'static mut StmF4Page,
+    ) -> Result<(), (ReturnCode, &'static mut StmF4Page)> {
         Ok(())
     }
 
@@ -350,14 +417,14 @@ impl<C: hil::flash::Client<Self>> hil::flash::HasClient<'static, C> for Flash {
 }
 
 impl hil::flash::Flash for Flash {
-    type Page = StmF4Sector;
+    type Page = StmF4Page;
 
     fn read_page(
         &self,
         page_number: usize,
         buf: &'static mut Self::Page,
     ) -> Result<(), (ReturnCode, &'static mut Self::Page)> {
-        self.read_sector(page_number, buf)
+        self.read_page(page_number, buf)
     }
 
     fn write_page(
@@ -365,10 +432,10 @@ impl hil::flash::Flash for Flash {
         page_number: usize,
         buf: &'static mut Self::Page,
     ) -> Result<(), (ReturnCode, &'static mut Self::Page)> {
-        self.write_sector(page_number, buf)
+        self.write_page(page_number, buf)
     }
 
-    fn erase_page(&self, page_number: usize) -> ReturnCode {
-        self.erase_sector(page_number)
+    fn erase_page(&self, sector_number: usize) -> ReturnCode {
+        self.erase_sector(sector_number)
     }
 }

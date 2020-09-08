@@ -2,9 +2,11 @@
 
 use core::fmt::Write;
 use cortexm4;
+use kernel::common::deferred_call;
 use kernel::Chip;
 
 use crate::adc;
+use crate::deferred_call_tasks::DeferredCallTask;
 use crate::dma1;
 use crate::exti;
 use crate::flash;
@@ -39,7 +41,11 @@ impl Chip for Stm32f4xx {
     fn service_pending_interrupts(&self) {
         unsafe {
             loop {
-                if let Some(interrupt) = cortexm4::nvic::next_pending() {
+                if let Some(task) = deferred_call::DeferredCall::next_pending() {
+                    match task {
+                        DeferredCallTask::Flash => flash::FLASH.handle_interrupt(),
+                    }
+                } else if let Some(interrupt) = cortexm4::nvic::next_pending() {
                     match interrupt {
                         nvic::DMA1_Stream1 => dma1::Dma1Peripheral::USART3_RX
                             .get_stream()
@@ -69,6 +75,8 @@ impl Chip for Stm32f4xx {
                         nvic::I2C1_ER => i2c::I2C1.handle_error(),
 
                         nvic::SPI3 => spi::SPI3.handle_interrupt(),
+
+                        nvic::FLASH => flash::FLASH.handle_interrupt(),
 
                         nvic::EXTI0 => exti::EXTI.handle_interrupt(),
                         nvic::EXTI1 => exti::EXTI.handle_interrupt(),
