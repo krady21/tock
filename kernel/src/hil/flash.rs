@@ -100,6 +100,9 @@ pub enum Error {
 
     /// An error occurred during the flash operation.
     FlashError,
+
+    /// A specific error occurred during the flash operation.
+    FlashErrorSpecific(&'static str),
 }
 
 pub trait HasClient<'a, C> {
@@ -138,6 +141,35 @@ pub trait Client<F: Flash> {
 
     /// Flash write complete.
     fn write_complete(&self, write_buffer: &'static mut F::Page, error: Error);
+
+    /// Flash erase complete.
+    fn erase_complete(&self, error: Error);
+}
+
+pub trait FlashPageless {
+    /// Read `length` bytes starting at address `address` in to the provided
+    /// buffer. The buffer must be at least `length` bytes long. The address
+    /// must be in the address space of the physical storage.
+    fn read(&self, buffer: &'static mut [u8], address: usize, length: usize) -> Result<(), (ReturnCode, &'static mut [u8])>;
+
+    /// Write `length` bytes starting at address `address` from the provided
+    /// buffer. The buffer must be at least `length` bytes long. This address
+    /// must be in the address space of the physical storage.
+    fn write(&self, buffer: &'static mut [u8], address: usize, length: usize) -> Result<(), (ReturnCode, &'static mut [u8])>;
+
+    /// Perform an erase for the flash granularity defined in the erase 
+    /// procedure in the data sheet. For example, that could be a sector
+    /// or a subsector.
+    fn erase(&self, erase_identifier: usize) -> ReturnCode;
+}
+
+/// Implement `ClientPageless` to receive callbacks from `FlashPageless`.
+pub trait ClientPageless {
+    /// Flash read complete.
+    fn read_complete(&self, buffer: &'static mut [u8], length: usize, error: Error);
+
+    /// Flash write complete.
+    fn write_complete(&self, buffer: &'static mut [u8], length: usize, error: Error);
 
     /// Flash erase complete.
     fn erase_complete(&self, error: Error);

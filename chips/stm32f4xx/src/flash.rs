@@ -1,7 +1,6 @@
 //! Embedded Flash Memory Controller
 
 use core::cell::Cell;
-use core::ops::{Index, IndexMut};
 use core::ptr;
 use kernel::common::cells::OptionalCell;
 use kernel::common::cells::TakeCell;
@@ -209,61 +208,8 @@ const KEY2: u32 = 0xCDEF89AB;
 const OPTKEY1: u32 = 0x08192A3B;
 const OPTKEY2: u32 = 0x4C5D6E7F;
 
-const PAGE_START: usize = 0x08000000;
-
-/// The stm32f4 boards use sectors instead of pages. Nevertheless,
-/// this implementation still uses pages in order to comply with the flash
-/// interface provided by the hil.
-///
-/// Sector 0  (16K):  Pages 0-7
-/// Sector 1  (16K):  Pages 8-15
-/// Sector 2  (16K):  Pages 16-23
-/// Sector 3  (16K):  Pages 24-31
-/// Sector 4  (64K):  Pages 32-63
-/// Sector 5  (128K): Pages 64-127
-/// Sector 6  (128K): Pages 128-191
-/// Sector 7  (128K): Pages 192-255
-/// Sector 8  (128K): Pages 256-319
-/// Sector 9  (128K): Pages 320-383
-/// Sector 10 (128K): Pages 384-447
-/// Sector 11 (128K): Pages 448-511
-pub struct StmF4Page(pub [u8; PAGE_SIZE]);
-
-const PAGE_SIZE: usize = 2048;
-
-impl Default for StmF4Page {
-    fn default() -> Self {
-        Self {
-            0: [0; PAGE_SIZE as usize],
-        }
-    }
-}
-
-impl StmF4Page {
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl Index<usize> for StmF4Page {
-    type Output = u8;
-
-    fn index(&self, idx: usize) -> &u8 {
-        &self.0[idx]
-    }
-}
-
-impl IndexMut<usize> for StmF4Page {
-    fn index_mut(&mut self, idx: usize) -> &mut u8 {
-        &mut self.0[idx]
-    }
-}
-
-impl AsMut<[u8]> for StmF4Page {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-}
+const FLASH_START: usize = 0x08000000;
+const FLASH_END: usize = 0x080FFFFF;
 
 pub static mut FLASH: Flash = Flash::new();
 
@@ -275,13 +221,15 @@ pub enum FlashState {
     Write,
     Erase,
     WriteOption,
-    EraseOption,
 }
 
 pub struct Flash {
     registers: StaticRef<FlashRegisters>,
-    client: OptionalCell<&'static dyn hil::flash::Client<Flash>>,
-    buffer: TakeCell<'static, StmF4Page>,
+    client: OptionalCell<&'static dyn hil::flash::ClientPageless>,
+    buffer: TakeCell<'static, [u8]>,
+    buffer_length: Cell<usize>,
+    write_address: Cell<usize>,
+    write_counter: Cell<usize>,
     state: Cell<FlashState>,
 }
 
@@ -291,7 +239,10 @@ impl Flash {
             registers: FLASH_BASE,
             client: OptionalCell::empty(),
             buffer: TakeCell::empty(),
+            buffer_length: Cell::new(0),
             state: Cell::new(FlashState::Ready),
+            write_address: Cell::new(0),
+            write_counter: Cell::new(0),
         }
     }
 
@@ -314,13 +265,85 @@ impl Flash {
         self.registers.cr.modify(Control::LOCK::SET);
     }
 
+    pub fn is_locked_option(&self) -> bool {
+        self.registers.ocr.is_set(OptionControl::OPTLOCK)
+    }
+
+    pub fn unlock_option(&self) {
+        self.registers.okr.write(Key::KEYR.val(OPTKEY1));
+        self.registers.okr.write(Key::KEYR.val(OPTKEY2));
+    }
+
+    pub fn lock_option(&self) {
+        self.registers.ocr.modify(OptionControl::OPTLOCK::SET);
+    }
+
+    /// Allows configuring the number of bytes to be programmed each time
+    /// a write operation occurs. The erase time also depends on the PSIZE value.
+    ///
+    /// Note: any program or erase operation started with inconsistent
+    /// parallelism/voltage settings may lead to unpredicted results.
+    pub fn set_parallelism(&self, parallelism: u32) -> ReturnCode {
+        match parallelism {
+            0 => {
+                self.registers.cr.modify(Control::PSIZE::Byte);
+                ReturnCode::SUCCESS
+            }
+            1 => {
+                self.registers.cr.modify(Control::PSIZE::HalfWord);
+                ReturnCode::SUCCESS
+            }
+            2 => {
+                self.registers.cr.modify(Control::PSIZE::Word);
+                ReturnCode::SUCCESS
+            }
+            3 => {
+                self.registers.cr.modify(Control::PSIZE::DoubleWord);
+                ReturnCode::SUCCESS
+            }
+            _ => ReturnCode::EINVAL,
+        }
+    }
+
+    pub fn get_parallelism(&self) -> u32 {
+        self.registers.cr.read(Control::PSIZE)
+    }
+
+    fn program_byte(&self) {
+        self.buffer.take().map(|buffer| {
+            let i = self.write_counter.get();
+            let address = self.write_address.get();
+
+            let location = unsafe { &*((address + i) as *const VolatileCell<u8>) };
+            location.set(buffer[i]);
+
+            self.buffer.replace(buffer);
+        });
+    }
+
     pub fn handle_interrupt(&self) {
         if self.registers.sr.is_set(Status::EOP) {
             // Cleared by writing a 1
             self.registers.sr.modify(Status::EOP::SET);
             match self.state.get() {
                 FlashState::Write => {
+                    self.write_counter.set(self.write_counter.get() + 1);
 
+                    if self.write_counter.get() == self.buffer_length.get() {
+                        self.registers.cr.modify(Control::PG::CLEAR);
+                        self.state.set(FlashState::Ready);
+                        self.write_counter.set(0);
+
+                        self.client.map(|client| {
+                            self.buffer.take().map(|buffer| {
+                                client.write_complete(
+                                    buffer,
+                                    self.buffer_length.get(),
+                                    hil::flash::Error::CommandComplete,
+                                );
+                            });
+                        });
+                    }
                 }
                 FlashState::Erase => {
                     if self.registers.cr.is_set(Control::SER) {
@@ -340,24 +363,111 @@ impl Flash {
             }
         }
 
+        if self.registers.sr.is_set(Status::RDERR) {
+            // Cleared by writing a 1.
+            self.registers.sr.modify(Status::RDERR::SET);
+            self.client.map(|client| {
+                self.buffer.take().map(|buffer| {
+                    client.read_complete(
+                        buffer,
+                        self.buffer_length.get(),
+                        hil::flash::Error::FlashErrorSpecific("Read Protection Error"),
+                    );
+                });
+            });
+        }
+
+        if self.registers.sr.is_set(Status::PGSERR) {
+            // Cleared by writing a 1.
+            self.registers.sr.modify(Status::PGSERR::SET);
+            self.client.map(|client| {
+                self.buffer.take().map(|buffer| {
+                    client.write_complete(
+                        buffer,
+                        self.buffer_length.get(),
+                        hil::flash::Error::FlashErrorSpecific("Programming Sequence Error"),
+                    );
+                });
+            });
+        }
+
+        if self.registers.sr.is_set(Status::PGPERR) {
+            // Cleared by writing a 1.
+            self.registers.sr.modify(Status::PGPERR::SET);
+            self.client.map(|client| {
+                self.buffer.take().map(|buffer| {
+                    client.write_complete(
+                        buffer,
+                        self.buffer_length.get(),
+                        hil::flash::Error::FlashErrorSpecific("Programming Parallelism Error"),
+                    );
+                });
+            });
+        }
+
+        if self.registers.sr.is_set(Status::PGAERR) {
+            // Cleared by writing a 1.
+            self.registers.sr.modify(Status::PGAERR::SET);
+            self.client.map(|client| {
+                self.buffer.take().map(|buffer| {
+                    client.write_complete(
+                        buffer,
+                        self.buffer_length.get(),
+                        hil::flash::Error::FlashErrorSpecific("Programming Alignment Error"),
+                    );
+                });
+            });
+        }
+
+        if self.registers.sr.is_set(Status::WRPERR) {
+            // Cleared by writing a 1.
+            self.registers.sr.modify(Status::WRPERR::SET);
+            match self.state.get() {
+                FlashState::Write => {
+                    self.client.map(|client| {
+                        self.buffer.take().map(|buffer| {
+                            client.write_complete(
+                                buffer,
+                                self.buffer_length.get(),
+                                hil::flash::Error::FlashErrorSpecific("Write Protection Error"),
+                            );
+                        });
+                    });
+                }
+                FlashState::Erase => {
+                    self.client.map(|client| {
+                        client.erase_complete(hil::flash::Error::FlashErrorSpecific(
+                            "Write Protection Error",
+                        ));
+                    });
+                }
+                _ => {}
+            }
+        }
+
         if self.state.get() == FlashState::Read {
             self.state.set(FlashState::Ready);
             self.client.map(|client| {
                 self.buffer.take().map(|buffer| {
-                    client.read_complete(buffer, hil::flash::Error::CommandComplete);
+                    client.read_complete(
+                        buffer,
+                        self.buffer_length.get(),
+                        hil::flash::Error::CommandComplete,
+                    );
                 });
             });
         }
     }
 
-    pub fn read_page(
+    pub fn read(
         &self,
-        page_number: usize,
-        buffer: &'static mut StmF4Page,
-    ) -> Result<(), (ReturnCode, &'static mut StmF4Page)> {
-        let mut byte: *const u8 = (PAGE_START + page_number * PAGE_SIZE) as *const u8;
+        buffer: &'static mut [u8],
+        address: usize,
+        length: usize,
+    ) -> Result<(), (ReturnCode, &'static mut [u8])> {
+        let mut byte: *const u8 = address as *const u8;
         unsafe {
-            for i in 0..buffer.len() {
+            for i in 0..length {
                 buffer[i] = ptr::read_volatile(byte);
                 byte = byte.offset(1);
             }
@@ -370,11 +480,33 @@ impl Flash {
         Ok(())
     }
 
-    pub fn write_page(
+    pub fn write(
         &self,
-        page_number: usize,
-        buffer: &'static mut StmF4Page,
-    ) -> Result<(), (ReturnCode, &'static mut StmF4Page)> {
+        buffer: &'static mut [u8],
+        address: usize,
+        length: usize,
+    ) -> Result<(), (ReturnCode, &'static mut [u8])> {
+        if address < FLASH_START && address + length > FLASH_END {
+            return Err((ReturnCode::EINVAL, buffer));
+        }
+
+        if self.is_locked() {
+            self.unlock();
+        }
+
+        self.enable();
+        self.state.set(FlashState::Write);
+        self.registers.cr.modify(Control::PG::SET);
+
+        self.buffer.replace(buffer);
+        self.buffer_length.set(length);
+        self.write_address.set(address);
+
+        match self.get_parallelism() {
+            0 => self.program_byte(),
+            _ => {}
+        }
+
         Ok(())
     }
 
@@ -408,34 +540,47 @@ impl Flash {
 
         ReturnCode::SUCCESS
     }
+
+    pub fn write_option(&self, value: u32) -> ReturnCode {
+        if self.is_locked_option() {
+            self.unlock_option();
+        }
+
+        self.enable();
+        self.state.set(FlashState::WriteOption);
+        self.registers.ocr.set(value);
+        self.registers.ocr.modify(OptionControl::OPTSTRT::SET);
+
+        ReturnCode::SUCCESS
+    }
 }
 
-impl<C: hil::flash::Client<Self>> hil::flash::HasClient<'static, C> for Flash {
+impl<C: hil::flash::ClientPageless> hil::flash::HasClient<'static, C> for Flash {
     fn set_client(&self, client: &'static C) {
         self.client.set(client);
     }
 }
 
-impl hil::flash::Flash for Flash {
-    type Page = StmF4Page;
-
-    fn read_page(
+impl hil::flash::FlashPageless for Flash {
+    fn read(
         &self,
-        page_number: usize,
-        buf: &'static mut Self::Page,
-    ) -> Result<(), (ReturnCode, &'static mut Self::Page)> {
-        self.read_page(page_number, buf)
+        buffer: &'static mut [u8],
+        address: usize,
+        length: usize,
+    ) -> Result<(), (ReturnCode, &'static mut [u8])> {
+        self.read(buffer, address, length)
     }
 
-    fn write_page(
+    fn write(
         &self,
-        page_number: usize,
-        buf: &'static mut Self::Page,
-    ) -> Result<(), (ReturnCode, &'static mut Self::Page)> {
-        self.write_page(page_number, buf)
+        buffer: &'static mut [u8],
+        address: usize,
+        length: usize,
+    ) -> Result<(), (ReturnCode, &'static mut [u8])> {
+        self.write(buffer, address, length)
     }
 
-    fn erase_page(&self, sector_number: usize) -> ReturnCode {
-        self.erase_sector(sector_number)
+    fn erase(&self, erase_identifier: usize) -> ReturnCode {
+        self.erase_sector(erase_identifier)
     }
 }
