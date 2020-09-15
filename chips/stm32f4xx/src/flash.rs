@@ -336,13 +336,11 @@ impl Flash {
 
                         self.client.map(|client| {
                             self.buffer.take().map(|buffer| {
-                                client.write_complete(
-                                    buffer,
-                                    self.buffer_length.get(),
-                                    hil::flash::Error::CommandComplete,
-                                );
+                                client.write_complete(buffer, hil::flash::Error::CommandComplete);
                             });
                         });
+                    } else {
+                        self.program_byte();
                     }
                 }
                 FlashState::Erase => {
@@ -359,22 +357,15 @@ impl Flash {
                         client.erase_complete(hil::flash::Error::CommandComplete);
                     });
                 }
+                FlashState::WriteOption => {
+                    self.client.map(|client| {
+                        self.buffer.take().map(|buffer| {
+                            client.write_complete(buffer, hil::flash::Error::CommandComplete);
+                        });
+                    });
+                }
                 _ => {}
             }
-        }
-
-        if self.registers.sr.is_set(Status::RDERR) {
-            // Cleared by writing a 1.
-            self.registers.sr.modify(Status::RDERR::SET);
-            self.client.map(|client| {
-                self.buffer.take().map(|buffer| {
-                    client.read_complete(
-                        buffer,
-                        self.buffer_length.get(),
-                        hil::flash::Error::FlashErrorSpecific("Read Protection Error"),
-                    );
-                });
-            });
         }
 
         if self.registers.sr.is_set(Status::PGSERR) {
@@ -384,7 +375,6 @@ impl Flash {
                 self.buffer.take().map(|buffer| {
                     client.write_complete(
                         buffer,
-                        self.buffer_length.get(),
                         hil::flash::Error::FlashErrorSpecific("Programming Sequence Error"),
                     );
                 });
@@ -398,7 +388,6 @@ impl Flash {
                 self.buffer.take().map(|buffer| {
                     client.write_complete(
                         buffer,
-                        self.buffer_length.get(),
                         hil::flash::Error::FlashErrorSpecific("Programming Parallelism Error"),
                     );
                 });
@@ -412,7 +401,6 @@ impl Flash {
                 self.buffer.take().map(|buffer| {
                     client.write_complete(
                         buffer,
-                        self.buffer_length.get(),
                         hil::flash::Error::FlashErrorSpecific("Programming Alignment Error"),
                     );
                 });
@@ -428,7 +416,6 @@ impl Flash {
                         self.buffer.take().map(|buffer| {
                             client.write_complete(
                                 buffer,
-                                self.buffer_length.get(),
                                 hil::flash::Error::FlashErrorSpecific("Write Protection Error"),
                             );
                         });
@@ -449,11 +436,7 @@ impl Flash {
             self.state.set(FlashState::Ready);
             self.client.map(|client| {
                 self.buffer.take().map(|buffer| {
-                    client.read_complete(
-                        buffer,
-                        self.buffer_length.get(),
-                        hil::flash::Error::CommandComplete,
-                    );
+                    client.read_complete(buffer, hil::flash::Error::CommandComplete);
                 });
             });
         }
@@ -463,11 +446,10 @@ impl Flash {
         &self,
         buffer: &'static mut [u8],
         address: usize,
-        length: usize,
     ) -> Result<(), (ReturnCode, &'static mut [u8])> {
         let mut byte: *const u8 = address as *const u8;
         unsafe {
-            for i in 0..length {
+            for i in 0..buffer.len() {
                 buffer[i] = ptr::read_volatile(byte);
                 byte = byte.offset(1);
             }
@@ -484,9 +466,8 @@ impl Flash {
         &self,
         buffer: &'static mut [u8],
         address: usize,
-        length: usize,
     ) -> Result<(), (ReturnCode, &'static mut [u8])> {
-        if address < FLASH_START && address + length > FLASH_END {
+        if address < FLASH_START && address + buffer.len() > FLASH_END {
             return Err((ReturnCode::EINVAL, buffer));
         }
 
@@ -498,8 +479,8 @@ impl Flash {
         self.state.set(FlashState::Write);
         self.registers.cr.modify(Control::PG::SET);
 
+        self.buffer_length.set(buffer.len());
         self.buffer.replace(buffer);
-        self.buffer_length.set(length);
         self.write_address.set(address);
 
         match self.get_parallelism() {
@@ -541,15 +522,22 @@ impl Flash {
         ReturnCode::SUCCESS
     }
 
-    pub fn write_option(&self, value: u32) -> ReturnCode {
+    pub fn write_option(&self, buffer: &'static mut [u8]) -> ReturnCode {
         if self.is_locked_option() {
             self.unlock_option();
         }
 
         self.enable();
         self.state.set(FlashState::WriteOption);
+        let value = (buffer[0] as u32) << 0
+            | (buffer[1] as u32) << 8
+            | (buffer[2] as u32) << 16
+            | (buffer[3] as u32) << 24;
+
         self.registers.ocr.set(value);
         self.registers.ocr.modify(OptionControl::OPTSTRT::SET);
+
+        self.buffer.replace(buffer);
 
         ReturnCode::SUCCESS
     }
@@ -566,18 +554,16 @@ impl hil::flash::FlashPageless for Flash {
         &self,
         buffer: &'static mut [u8],
         address: usize,
-        length: usize,
     ) -> Result<(), (ReturnCode, &'static mut [u8])> {
-        self.read(buffer, address, length)
+        self.read(buffer, address)
     }
 
     fn write(
         &self,
         buffer: &'static mut [u8],
         address: usize,
-        length: usize,
     ) -> Result<(), (ReturnCode, &'static mut [u8])> {
-        self.write(buffer, address, length)
+        self.write(buffer, address)
     }
 
     fn erase(&self, erase_identifier: usize) -> ReturnCode {
