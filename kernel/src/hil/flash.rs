@@ -147,17 +147,25 @@ pub trait Client<F: Flash> {
 }
 
 pub trait FlashPageless {
-    /// Read `buffer.length()` bytes starting at address `address` in to the 
-    /// provided buffer. This address must be in the address space of the 
+    /// Read `buffer.length()` bytes starting at address `address` in to the
+    /// provided buffer. This address must be in the address space of the
     /// physical storage.
-    fn read(&self, buffer: &'static mut [u8], address: usize) -> Result<(), (ReturnCode, &'static mut [u8])>;
+    fn read(
+        &self,
+        buffer: &'static mut [u8],
+        address: usize,
+    ) -> Result<(), (ReturnCode, &'static mut [u8])>;
 
-    /// Write `buffer.length()` bytes starting at address `address` from the 
-    /// provided buffer. This address must be in the address space of the 
+    /// Write `buffer.length()` bytes starting at address `address` from the
+    /// provided buffer. This address must be in the address space of the
     /// physical storage.
-    fn write(&self, buffer: &'static mut [u8], address: usize) -> Result<(), (ReturnCode, &'static mut [u8])>;
+    fn write(
+        &self,
+        buffer: &'static mut [u8],
+        address: usize,
+    ) -> Result<(), (ReturnCode, &'static mut [u8])>;
 
-    /// Perform an erase for the flash granularity defined in the erase 
+    /// Perform an erase for the flash granularity defined in the erase
     /// procedure in the data sheet. For example, that could be a sector
     /// or a subsector.
     fn erase(&self, erase_identifier: usize) -> ReturnCode;

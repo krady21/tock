@@ -8,8 +8,8 @@
 #![no_std]
 
 pub mod chip;
-pub mod nvic;
 mod deferred_call_tasks;
+pub mod nvic;
 
 // Peripherals
 pub mod adc;

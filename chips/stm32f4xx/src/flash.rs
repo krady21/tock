@@ -1,7 +1,6 @@
 //! Embedded Flash Memory Controller
 
 use core::cell::Cell;
-use core::ptr;
 use kernel::common::cells::OptionalCell;
 use kernel::common::cells::TakeCell;
 use kernel::common::cells::VolatileCell;
@@ -15,7 +14,7 @@ use kernel::ReturnCode;
 use crate::deferred_call_tasks::DeferredCallTask;
 
 const FLASH_BASE: StaticRef<FlashRegisters> =
-    unsafe { StaticRef::new(0x40023C00 as *const FlashRegisters) };
+    unsafe { StaticRef::new(0x4002_3C00 as *const FlashRegisters) };
 
 #[repr(C)]
 struct FlashRegisters {
@@ -208,8 +207,8 @@ const KEY2: u32 = 0xCDEF89AB;
 const OPTKEY1: u32 = 0x08192A3B;
 const OPTKEY2: u32 = 0x4C5D6E7F;
 
-const FLASH_START: usize = 0x08000000;
-const FLASH_END: usize = 0x080FFFFF;
+const FLASH_START: usize = 0x0800_0000;
+const FLASH_END: usize = 0x080F_FFFF;
 
 pub static mut FLASH: Flash = Flash::new();
 
@@ -223,6 +222,15 @@ pub enum FlashState {
     WriteOption,
 }
 
+// Psize is used to represent the configured program/erase parallelism.
+#[derive(Clone, Copy)]
+pub enum Psize {
+    Byte,
+    HalfWord,
+    Word,
+    DoubleWord,
+}
+
 pub struct Flash {
     registers: StaticRef<FlashRegisters>,
     client: OptionalCell<&'static dyn hil::flash::ClientPageless>,
@@ -230,6 +238,7 @@ pub struct Flash {
     buffer_length: Cell<usize>,
     write_address: Cell<usize>,
     write_counter: Cell<usize>,
+    psize: Cell<Psize>,
     state: Cell<FlashState>,
 }
 
@@ -240,9 +249,10 @@ impl Flash {
             client: OptionalCell::empty(),
             buffer: TakeCell::empty(),
             buffer_length: Cell::new(0),
-            state: Cell::new(FlashState::Ready),
             write_address: Cell::new(0),
             write_counter: Cell::new(0),
+            psize: Cell::new(Psize::Word),
+            state: Cell::new(FlashState::Ready),
         }
     }
 
@@ -279,43 +289,65 @@ impl Flash {
     }
 
     /// Allows configuring the number of bytes to be programmed each time
-    /// a write operation occurs. The erase time also depends on the PSIZE value.
+    /// a write operation occurs. The erase time also depends on this value.
     ///
     /// Note: any program or erase operation started with inconsistent
     /// parallelism/voltage settings may lead to unpredicted results.
-    pub fn set_parallelism(&self, parallelism: u32) -> ReturnCode {
+    pub fn set_parallelism(&self, parallelism: Psize) {
         match parallelism {
-            0 => {
-                self.registers.cr.modify(Control::PSIZE::Byte);
-                ReturnCode::SUCCESS
-            }
-            1 => {
-                self.registers.cr.modify(Control::PSIZE::HalfWord);
-                ReturnCode::SUCCESS
-            }
-            2 => {
-                self.registers.cr.modify(Control::PSIZE::Word);
-                ReturnCode::SUCCESS
-            }
-            3 => {
-                self.registers.cr.modify(Control::PSIZE::DoubleWord);
-                ReturnCode::SUCCESS
-            }
-            _ => ReturnCode::EINVAL,
+            Psize::Byte => self.registers.cr.modify(Control::PSIZE::Byte),
+            Psize::HalfWord => self.registers.cr.modify(Control::PSIZE::HalfWord),
+            Psize::Word => self.registers.cr.modify(Control::PSIZE::Word),
+            Psize::DoubleWord => self.registers.cr.modify(Control::PSIZE::DoubleWord),
         }
     }
 
-    pub fn get_parallelism(&self) -> u32 {
-        self.registers.cr.read(Control::PSIZE)
+    pub fn get_parallelism(&self) -> Option<Psize> {
+        match self.registers.cr.read(Control::PSIZE) {
+            0 => Some(Psize::Byte),
+            1 => Some(Psize::HalfWord),
+            2 => Some(Psize::Word),
+            3 => Some(Psize::DoubleWord),
+            _ => None,
+        }
     }
 
-    fn program_byte(&self) {
+    fn program(&self) {
         self.buffer.take().map(|buffer| {
             let i = self.write_counter.get();
             let address = self.write_address.get();
 
-            let location = unsafe { &*((address + i) as *const VolatileCell<u8>) };
-            location.set(buffer[i]);
+            match self.psize.get() {
+                Psize::Byte => {
+                    let location = unsafe { &*((address + i) as *const VolatileCell<u8>) };
+                    location.set(buffer[i]);
+                }
+                Psize::HalfWord => {
+                    let value = (buffer[i + 0] as u16) << 0 | (buffer[i + 1] as u16) << 8;
+                    let location = unsafe { &*((address + i) as *const VolatileCell<u16>) };
+                    location.set(value);
+                }
+                Psize::Word => {
+                    let value = (buffer[i] as u32) << 0
+                        | (buffer[i + 1] as u32) << 8
+                        | (buffer[i + 2] as u32) << 16
+                        | (buffer[i + 3] as u32) << 24;
+                    let location = unsafe { &*((address + i) as *const VolatileCell<u32>) };
+                    location.set(value);
+                }
+                Psize::DoubleWord => {
+                    let value = (buffer[i] as u64) << 0
+                        | (buffer[i + 1] as u64) << 8
+                        | (buffer[i + 2] as u64) << 16
+                        | (buffer[i + 3] as u64) << 24
+                        | (buffer[i + 4] as u64) << 32
+                        | (buffer[i + 5] as u64) << 40
+                        | (buffer[i + 6] as u64) << 48
+                        | (buffer[i + 7] as u64) << 56;
+                    let location = unsafe { &*((address + i) as *const VolatileCell<u64>) };
+                    location.set(value);
+                }
+            }
 
             self.buffer.replace(buffer);
         });
@@ -327,7 +359,16 @@ impl Flash {
             self.registers.sr.modify(Status::EOP::SET);
             match self.state.get() {
                 FlashState::Write => {
-                    self.write_counter.set(self.write_counter.get() + 1);
+                    let inc = match self.psize.get() {
+                        Psize::Byte => 1,
+                        Psize::HalfWord => 2,
+                        Psize::Word => 4,
+                        Psize::DoubleWord => 8,
+                    };
+
+                    // This increments the write counter according to the
+                    // parallelism value used.
+                    self.write_counter.set(self.write_counter.get() + inc);
 
                     if self.write_counter.get() == self.buffer_length.get() {
                         self.registers.cr.modify(Control::PG::CLEAR);
@@ -340,7 +381,7 @@ impl Flash {
                             });
                         });
                     } else {
-                        self.program_byte();
+                        self.program();
                     }
                 }
                 FlashState::Erase => {
@@ -450,7 +491,7 @@ impl Flash {
         let mut byte: *const u8 = address as *const u8;
         unsafe {
             for i in 0..buffer.len() {
-                buffer[i] = ptr::read_volatile(byte);
+                buffer[i] = *byte;
                 byte = byte.offset(1);
             }
         }
@@ -482,11 +523,9 @@ impl Flash {
         self.buffer_length.set(buffer.len());
         self.buffer.replace(buffer);
         self.write_address.set(address);
+        self.psize.set(self.get_parallelism().unwrap());
 
-        match self.get_parallelism() {
-            0 => self.program_byte(),
-            _ => {}
-        }
+        self.program();
 
         Ok(())
     }
