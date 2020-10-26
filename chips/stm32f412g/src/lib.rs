@@ -3,7 +3,7 @@
 use cortexm4::generic_isr;
 
 pub use stm32f4xx::{
-    adc, chip, dbg, dma1, exti, flash, gpio, i2c, nvic, rcc, spi, syscfg, tim2, usart,
+    adc, chip, dbg, dma1, exti, flash, fsmc, gpio, i2c, nvic, rcc, spi, syscfg, tim2, usart,
 };
 
 pub mod stm32f412g_nvic;

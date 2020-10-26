@@ -24,8 +24,12 @@ use rv32i::csr;
 #[allow(dead_code)]
 mod aes_test;
 
+#[allow(dead_code)]
+mod multi_alarm_test;
+
 pub mod io;
 pub mod usb;
+
 //
 // Actual memory for holding the active process structures. Need an empty list
 // at least.
@@ -63,10 +67,6 @@ struct OpenTitan {
         'static,
         capsules::virtual_uart::UartDevice<'static>,
     >,
-    usb: &'static capsules::usb::usb_user::UsbSyscallDriver<
-        'static,
-        capsules::usb::usbc_client::Client<'static, lowrisc::usbdev::Usb<'static>>,
-    >,
     i2c_master: &'static capsules::i2c_master::I2CMasterDriver<lowrisc::i2c::I2c<'static>>,
 }
 
@@ -83,7 +83,6 @@ impl Platform for OpenTitan {
             capsules::console::DRIVER_NUM => f(Some(self.console)),
             capsules::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules::low_level_debug::DRIVER_NUM => f(Some(self.lldb)),
-            capsules::usb::usb_user::DRIVER_NUM => f(Some(self.usb)),
             capsules::i2c_master::DRIVER_NUM => f(Some(self.i2c_master)),
             _ => f(None),
         }
@@ -196,7 +195,7 @@ pub unsafe fn reset_handler() {
         MuxAlarm<'static, earlgrey::timer::RvTimer>,
         MuxAlarm::new(alarm)
     );
-    hil::time::Alarm::set_client(&earlgrey::timer::TIMER, mux_alarm);
+    hil::time::Alarm::set_alarm_client(&earlgrey::timer::TIMER, mux_alarm);
 
     // Alarm
     let virtual_alarm_user = static_init!(
@@ -214,13 +213,13 @@ pub unsafe fn reset_handler() {
             board_kernel.create_grant(&memory_allocation_cap)
         )
     );
-    hil::time::Alarm::set_client(virtual_alarm_user, alarm);
+    hil::time::Alarm::set_alarm_client(virtual_alarm_user, alarm);
 
     let chip = static_init!(
         earlgrey::chip::EarlGrey<VirtualMuxAlarm<'static, earlgrey::timer::RvTimer>>,
         earlgrey::chip::EarlGrey::new(scheduler_timer_virtual_alarm)
     );
-    scheduler_timer_virtual_alarm.set_client(chip.scheduler_timer());
+    scheduler_timer_virtual_alarm.set_alarm_client(chip.scheduler_timer());
     CHIP = Some(chip);
 
     // Need to enable all interrupts for Tock Kernel
@@ -256,8 +255,6 @@ pub unsafe fn reset_handler() {
         [u8; 32]
     ));
 
-    let usb = usb::UsbComponent::new(board_kernel).finalize(());
-
     let i2c_master = static_init!(
         capsules::i2c_master::I2CMasterDriver<lowrisc::i2c::I2c<'static>>,
         capsules::i2c_master::I2CMasterDriver::new(
@@ -269,7 +266,9 @@ pub unsafe fn reset_handler() {
 
     earlgrey::i2c::I2C.set_master_client(i2c_master);
 
-    debug!("OpenTitan initialisation complete. Entering main loop");
+    // USB support is currently broken in the OpenTitan hardware
+    // See https://github.com/lowRISC/opentitan/issues/2598 for more details
+    // let usb = usb::UsbComponent::new(board_kernel).finalize(());
 
     /// These symbols are defined in the linker script.
     extern "C" {
@@ -290,7 +289,6 @@ pub unsafe fn reset_handler() {
         alarm: alarm,
         hmac,
         lldb: lldb,
-        usb,
         i2c_master,
     };
 
@@ -313,6 +311,7 @@ pub unsafe fn reset_handler() {
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
+    debug!("OpenTitan initialisation complete. Entering main loop");
 
     let scheduler = components::sched::priority::PriorityComponent::new(board_kernel).finalize(());
     board_kernel.kernel_loop(&opentitan, chip, None, scheduler, &main_loop_cap);

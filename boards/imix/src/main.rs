@@ -17,6 +17,7 @@ use capsules::net::ipv6::ip_utils::IPAddr;
 use capsules::virtual_alarm::VirtualMuxAlarm;
 use capsules::virtual_i2c::MuxI2C;
 use capsules::virtual_spi::VirtualSpiMasterDevice;
+//use capsules::virtual_timer::MuxTimer;
 use kernel::capabilities;
 use kernel::common::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
 use kernel::component::Component;
@@ -24,6 +25,7 @@ use kernel::hil::i2c::I2CMaster;
 use kernel::hil::radio;
 #[allow(unused_imports)]
 use kernel::hil::radio::{RadioConfig, RadioData};
+//use kernel::hil::time::Alarm;
 use kernel::hil::Controller;
 #[allow(unused_imports)]
 use kernel::{create_capability, debug, debug_gpio, static_init};
@@ -59,6 +61,15 @@ mod test;
 
 // Helper functions for enabling/disabling power on Imix submodules
 mod power;
+
+#[allow(dead_code)]
+mod alarm_test;
+
+#[allow(dead_code)]
+mod multi_alarm_test;
+
+#[allow(dead_code)]
+mod multi_timer_test;
 
 // State for loading apps.
 
@@ -101,7 +112,7 @@ struct Imix {
     temp: &'static capsules::temperature::TemperatureSensor<'static>,
     humidity: &'static capsules::humidity::HumiditySensor<'static>,
     ambient_light: &'static capsules::ambient_light::AmbientLight<'static>,
-    adc: &'static capsules::adc::Adc<'static, sam4l::adc::Adc>,
+    adc: &'static capsules::adc::AdcDedicated<'static, sam4l::adc::Adc>,
     led: &'static capsules::led::LED<'static, sam4l::gpio::GPIOPin<'static>>,
     button: &'static capsules::button::Button<'static, sam4l::gpio::GPIOPin<'static>>,
     rng: &'static capsules::rng::RngDriver<'static>,
@@ -109,7 +120,10 @@ struct Imix {
         'static,
         sam4l::acifc::Acifc<'static>,
     >,
-    spi: &'static capsules::spi::Spi<'static, VirtualSpiMasterDevice<'static, sam4l::spi::SpiHw>>,
+    spi: &'static capsules::spi_controller::Spi<
+        'static,
+        VirtualSpiMasterDevice<'static, sam4l::spi::SpiHw>,
+    >,
     ipc: kernel::ipc::IPC,
     ninedof: &'static capsules::ninedof::NineDof<'static>,
     radio_driver: &'static capsules::ieee802154::RadioDriver<'static>,
@@ -145,7 +159,7 @@ impl kernel::Platform for Imix {
             capsules::console::DRIVER_NUM => f(Some(self.console)),
             capsules::gpio::DRIVER_NUM => f(Some(self.gpio)),
             capsules::alarm::DRIVER_NUM => f(Some(self.alarm)),
-            capsules::spi::DRIVER_NUM => f(Some(self.spi)),
+            capsules::spi_controller::DRIVER_NUM => f(Some(self.spi)),
             capsules::adc::DRIVER_NUM => f(Some(self.adc)),
             capsules::led::DRIVER_NUM => f(Some(self.led)),
             capsules::button::DRIVER_NUM => f(Some(self.button)),
@@ -532,6 +546,20 @@ pub unsafe fn reset_handler() {
         mux_alarm,
     );*/
     //udp_lowpan_test.start();
+
+    // alarm_test::run_alarm();
+    /*let virtual_alarm_timer = static_init!(
+        VirtualMuxAlarm<'static, sam4l::ast::Ast>,
+        VirtualMuxAlarm::new(mux_alarm)
+    );
+
+    let mux_timer = static_init!(
+        MuxTimer<'static, sam4l::ast::Ast>,
+        MuxTimer::new(virtual_alarm_timer)
+    );*/
+    //virtual_alarm_timer.set_alarm_client(mux_timer);
+
+    //multi_alarm_test::run_multi_alarm(mux_alarm);
 
     debug!("Initialization complete. Entering main loop");
 

@@ -6,17 +6,21 @@ use kernel::common::deferred_call;
 use kernel::Chip;
 
 use crate::adc;
+use crate::deferred_call_tasks::DeferredCallTask;
 use crate::exti;
+use crate::flash;
 use crate::i2c;
 use crate::nvic;
 use crate::spi;
 use crate::tim2;
 use crate::usart;
+use crate::wdt;
 
 pub struct Stm32f3xx {
     mpu: cortexm4::mpu::MPU,
     userspace_kernel_boundary: cortexm4::syscall::SysCall,
     scheduler_timer: cortexm4::systick::SysTick,
+    watchdog: wdt::WindoWdg,
 }
 
 impl Stm32f3xx {
@@ -25,7 +29,12 @@ impl Stm32f3xx {
             mpu: cortexm4::mpu::MPU::new(),
             userspace_kernel_boundary: cortexm4::syscall::SysCall::new(),
             scheduler_timer: cortexm4::systick::SysTick::new(),
+            watchdog: wdt::WindoWdg::new(),
         }
+    }
+
+    pub fn enable_watchdog(&self) {
+        self.watchdog.enable();
     }
 }
 
@@ -33,18 +42,24 @@ impl Chip for Stm32f3xx {
     type MPU = cortexm4::mpu::MPU;
     type UserspaceKernelBoundary = cortexm4::syscall::SysCall;
     type SchedulerTimer = cortexm4::systick::SysTick;
-    type WatchDog = ();
+    type WatchDog = wdt::WindoWdg;
 
     fn service_pending_interrupts(&self) {
         unsafe {
             loop {
-                if let Some(interrupt) = cortexm4::nvic::next_pending() {
+                if let Some(task) = deferred_call::DeferredCall::next_pending() {
+                    match task {
+                        DeferredCallTask::Flash => flash::FLASH.handle_interrupt(),
+                    }
+                } else if let Some(interrupt) = cortexm4::nvic::next_pending() {
                     match interrupt {
                         nvic::USART1 => usart::USART1.handle_interrupt(),
 
                         nvic::TIM2 => tim2::TIM2.handle_interrupt(),
 
                         nvic::SPI1 => spi::SPI1.handle_interrupt(),
+
+                        nvic::FLASH => flash::FLASH.handle_interrupt(),
 
                         nvic::I2C1_EV => i2c::I2C1.handle_event(),
                         nvic::I2C1_ER => i2c::I2C1.handle_error(),
@@ -86,7 +101,7 @@ impl Chip for Stm32f3xx {
     }
 
     fn watchdog(&self) -> &Self::WatchDog {
-        &()
+        &self.watchdog
     }
 
     fn userspace_kernel_boundary(&self) -> &cortexm4::syscall::SysCall {

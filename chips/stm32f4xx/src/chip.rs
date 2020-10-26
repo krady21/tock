@@ -5,16 +5,21 @@ use cortexm4;
 use kernel::common::deferred_call;
 use kernel::Chip;
 
+use kernel::common::deferred_call;
+
 use crate::adc;
 use crate::deferred_call_tasks::DeferredCallTask;
 use crate::dma1;
 use crate::exti;
 use crate::flash;
+use crate::fsmc;
 use crate::i2c;
 use crate::nvic;
 use crate::spi;
 use crate::tim2;
 use crate::usart;
+
+use crate::deferred_calls::DeferredCallTask;
 
 pub struct Stm32f4xx {
     mpu: cortexm4::mpu::MPU,
@@ -44,6 +49,7 @@ impl Chip for Stm32f4xx {
                 if let Some(task) = deferred_call::DeferredCall::next_pending() {
                     match task {
                         DeferredCallTask::Flash => flash::FLASH.handle_interrupt(),
+                        DeferredCallTask::Fsmc => fsmc::FSMC.handle_interrupt(),
                     }
                 } else if let Some(interrupt) = cortexm4::nvic::next_pending() {
                     match interrupt {
@@ -104,7 +110,7 @@ impl Chip for Stm32f4xx {
     }
 
     fn has_pending_interrupts(&self) -> bool {
-        unsafe { cortexm4::nvic::has_pending() }
+        unsafe { cortexm4::nvic::has_pending() || deferred_call::has_tasks() }
     }
 
     fn mpu(&self) -> &cortexm4::mpu::MPU {

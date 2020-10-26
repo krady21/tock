@@ -22,6 +22,7 @@ pub enum NUM {
 
     // HW Buses
     Spi                   = 0x20001,
+    SpiPeripheral         = 0x20002,
     I2cMaster             = 0x20003,
     UsbUser               = 0x20005,
     I2cMasterSlave        = 0x20006,
@@ -46,6 +47,7 @@ pub enum NUM {
     Humidity              = 0x60001,
     AmbientLight          = 0x60002,
     NINEDOF               = 0x60004,
+    Proximity             = 0x60005,
 
     // Sensor ICs
     Tsl2561               = 0x70000,

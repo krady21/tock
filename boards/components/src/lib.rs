@@ -1,8 +1,10 @@
 #![no_std]
 #![feature(const_in_array_repeat_expressions)]
 
+pub mod adc;
 pub mod alarm;
 pub mod analog_comparator;
+pub mod bus;
 pub mod button;
 pub mod cdc;
 pub mod console;
@@ -33,6 +35,8 @@ pub mod screen;
 pub mod segger_rtt;
 pub mod si7021;
 pub mod spi;
-pub mod st7735;
+pub mod st77xx;
 pub mod temperature;
+pub mod temperature_stm;
+pub mod test;
 pub mod touch;
